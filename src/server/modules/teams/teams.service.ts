@@ -214,7 +214,7 @@ export async function setTeamSupervisor({ db, actor }: ServiceContext, rawId: un
       const team = await findTeamView(tx, id);
       if (!team) throw new NotFoundError();
       if (team.supervisorId === supervisorId) return;
-      if (supervisorId) await assertEligibleSupervisor(tx, supervisorId);
+      const toSupervisorName = supervisorId ? await assertEligibleSupervisor(tx, supervisorId) : null;
 
       await tx.update(teams).set({ supervisorId }).where(eq(teams.id, id));
       await recordAudit(tx, {
@@ -223,7 +223,13 @@ export async function setTeamSupervisor({ db, actor }: ServiceContext, rawId: un
         entityType: "team",
         entityId: id,
         teamId: id,
-        metadata: { fromSupervisorId: team.supervisorId, toSupervisorId: supervisorId },
+        metadata: {
+          teamName: team.name,
+          fromSupervisorId: team.supervisorId,
+          fromSupervisorName: team.supervisorName,
+          toSupervisorId: supervisorId,
+          toSupervisorName,
+        },
       });
     });
   } catch (error) {
@@ -231,9 +237,10 @@ export async function setTeamSupervisor({ db, actor }: ServiceContext, rawId: un
   }
 }
 
-async function assertEligibleSupervisor(db: Database, userId: string): Promise<void> {
+/** Valida o supervisor e devolve o nome dele. */
+async function assertEligibleSupervisor(db: Database, userId: string): Promise<string> {
   const [user] = await db
-    .select({ role: users.role, active: users.active, ledTeamId: teams.id })
+    .select({ name: users.name, role: users.role, active: users.active, ledTeamId: teams.id })
     .from(users)
     .leftJoin(teams, eq(teams.supervisorId, users.id))
     .where(eq(users.id, userId))
@@ -242,6 +249,7 @@ async function assertEligibleSupervisor(db: Database, userId: string): Promise<v
   if (!user || user.role !== "SUPERVISOR") throw fail("Selecione um usuário com perfil Supervisor.");
   if (!user.active) throw fail("O supervisor selecionado está inativo.");
   if (user.ledTeamId) throw fail(SUPERVISOR_TAKEN);
+  return user.name;
 }
 
 /** Converte violações de unicidade (inclusive por concorrência) em mensagens de negócio. */

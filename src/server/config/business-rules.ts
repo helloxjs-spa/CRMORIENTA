@@ -11,8 +11,11 @@ export const BUSINESS_RULES = {
   timezone: "America/Sao_Paulo",
   /** Comissão padrão por curso/aluno vendido, em centavos (Documento Mestre §14). */
   commissionPerItemCents: 100_00,
-  /** Prazo de cada etapa de follow-up, em dias (Documento Mestre §7). */
-  followUpDeadlineDays: 1,
-  /** Prazo para atualizar uma negociação, em dias (Documento Mestre §8). */
-  negotiationDeadlineDays: 1,
+  /**
+   * Prazo de cada etapa de follow-up: 24 horas corridas a partir da entrada na
+   * etapa (Documento Mestre §7; "1 dia" definido pelo cliente como 24 h).
+   */
+  followUpDeadlineHours: 24,
+  /** Prazo da negociação: 24 horas corridas desde a última atualização válida (§8). */
+  negotiationDeadlineHours: 24,
 } as const;

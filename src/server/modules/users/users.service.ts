@@ -1,4 +1,5 @@
 import { and, asc, eq, ilike, or, type SQL } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { z } from "zod";
 import { hashPassword } from "@/server/auth/password";
 import { revokeAllUserSessions } from "@/server/auth/session";
@@ -274,6 +275,11 @@ export async function changeSellerTeam(
     if (seller.teamId === teamId) return;
     if (teamId) await assertActiveTeam(tx, teamId);
 
+    // Retrato de origem e destino no momento da mudança (equipe e supervisor),
+    // para que o histórico continue legível mesmo após renomeações ou trocas
+    // de supervisor.
+    const [from, to] = await Promise.all([teamSnapshot(tx, seller.teamId), teamSnapshot(tx, teamId)]);
+
     await tx.update(users).set({ teamId }).where(eq(users.id, sellerId));
     await recordAudit(tx, {
       actorId: actor.userId,
@@ -281,9 +287,25 @@ export async function changeSellerTeam(
       entityType: "user",
       entityId: sellerId,
       teamId,
-      metadata: { fromTeamId: seller.teamId, toTeamId: teamId },
+      metadata: { fromTeamId: seller.teamId, toTeamId: teamId, from, to },
     });
+    // Fase Leads: nesta mesma transação, os leads em aberto do vendedor passam
+    // para a nova equipe, com um lead_event TEAM_CHANGED por lead.
   });
+}
+
+type TeamSnapshot = { teamId: string; teamName: string; supervisorId: string | null; supervisorName: string | null };
+
+async function teamSnapshot(db: Database, teamId: string | null): Promise<TeamSnapshot | null> {
+  if (!teamId) return null;
+  const supervisor = alias(users, "supervisor");
+  const [row] = await db
+    .select({ teamId: teams.id, teamName: teams.name, supervisorId: teams.supervisorId, supervisorName: supervisor.name })
+    .from(teams)
+    .leftJoin(supervisor, eq(supervisor.id, teams.supervisorId))
+    .where(eq(teams.id, teamId))
+    .limit(1);
+  return row ?? null;
 }
 
 async function assertActiveTeam(db: Database, teamId: string): Promise<void> {

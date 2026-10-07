@@ -76,34 +76,57 @@ Relação **Empresa → Supervisor → Vendedores**: empresa única (implícita)
 
 | Entidade | Responsabilidade | Observações de modelagem |
 |---|---|---|
-| `leads` | Pessoa/prospect | `phone_normalized` **UNIQUE** (E.164, só dígitos) — a constraint resolve corrida entre cadastros simultâneos; o serviço traduz a violação em "lead já existe, responsável: X". Campos: `owner_id`, `team_id`, `stage`, `status`, `stage_entered_at`, `stage_due_at`, `cycle` |
-| `lead_interests` | Cursos de interesse (N:N lead↔curso) | Documento fala em "curso(s) de interesse" |
-| `lead_events` | **Linha do tempo do lead** (append-only) | Um registro por fato: criação, mudança de etapa (de/para), transferência (responsável/equipe de/para), redistribuição, lixeira, recuperação, venda. Substitui `LeadAssignmentHistory` + `LeadStageHistory` sem redundância |
-| `lead_notes` | Observações / atualizações de negociação | Imutáveis; nova observação nunca sobrescreve; `lead_events` referencia a nota |
-| `courses` | Curso (nome, ativo) | Sem coluna de custo |
-| `course_costs` | Custo de bolsa com vigência | Só ADMIN lê/escreve; histórico de alterações |
-| `sales` | Cabeçalho: lead, vendedor, **equipe (snapshot)**, data, valor total, forma de pagamento, status (`ACTIVE`/`REVERSED`), dados do estorno (quem, quando, motivo) | Estorno = colunas na própria venda (1:1), sem tabela extra |
-| `sale_items` | Um curso vendido | Snapshot de `scholarship_cost_cents` e `commission_cents` no momento da venda → relatórios históricos não mudam quando o custo/comissão mudar |
-| `installments` | Parcelas | `UNIQUE(sale_id, number)`; soma = total (centavos, resto distribuído); status, pago em/por |
-| `certificates` | Controle operacional | Vinculado a `sale_item` (aluno, curso, vendedor e data da venda derivam dele); conclusão, entrega, certificadora (texto) |
-| `app_settings` | Parâmetros editáveis (ex.: comissão por curso) | Valor vigente copiado nos registros gerados |
+| `leads` | Pessoa/prospect | `phone_normalized` **UNIQUE** (E.164, só dígitos): a constraint resolve corrida entre cadastros simultâneos; o serviço traduz a violação em "lead já existe, responsável: X". Campos: `owner_id` (**sempre um SELLER**, garantido por trigger), `team_id` (equipe responsável **atual**), `stage`, `status`, `current_cycle_id`, `stage_entered_at`, `stage_due_at` |
+| `lead_cycles` | **Ciclos de atendimento** | Um registro por tentativa comercial: `number` (1, 2, 3…), `kind` (`INITIAL` / `REWORK`), vendedor e equipe do ciclo, `started_at/by`, `ended_at`, `end_reason` (`FOLLOW_UP_EXPIRED`, `TRASHED`, `WON`, `TRANSFERRED`…). Permite saber se um Follow-up 1 pertence ao primeiro atendimento ou a um retrabalho |
+| `lead_interests` | Cursos de interesse (N:N lead↔curso) | O documento fala em "curso(s) de interesse" |
+| `lead_events` | **Linha do tempo do lead** (append-only) | Um registro por fato, sempre com `cycle_id`, `actor_id`, `occurred_at` e **retrato da equipe** (`team_id` no momento): criação, mudança de etapa (de/para), transferência (responsável/equipe de/para), mudança de equipe por troca do vendedor, redistribuição, lixeira, recuperação, venda. Substitui `LeadAssignmentHistory` + `LeadStageHistory` sem redundância |
+| `lead_notes` | Observações e atualizações de negociação | Imutáveis; nova observação nunca sobrescreve; `lead_events` referencia a nota |
+| `courses` | Curso (nome, ativo) | Sem coluna de custo (ver Fase Cursos) |
+| `course_costs` | Custo de bolsa (1:1 com o curso) | Tabela separada, lida e escrita só pelo ADMIN. Histórico de alterações no `audit_events` (`course.cost_changed`) |
+| `sales` | Cabeçalho: lead, vendedor, **`team_id` e `supervisor_id` da época (snapshot)**, data, valor total, forma de pagamento, status (`ACTIVE`/`REVERSED`), dados do estorno (quem, quando, motivo) | Faturamento, ranking e dashboards por equipe agrupam por `sales.team_id`, **nunca** pela equipe atual do vendedor. Estorno = colunas na própria venda (1:1) |
+| `sale_items` | Um curso vendido | Snapshot de `scholarship_cost_cents` e `commission_cents` no momento da venda: relatórios históricos não mudam quando custo ou comissão mudarem |
+| `installments` | Parcelas | `number`, `amount_cents`, `due_date`, `status` (`PENDING`/`PAID`), `paid_at`, `paid_by`; `UNIQUE(sale_id, number)`. Regras de geração (primeira data, recorrência, centavos) só serão definidas na fase financeira |
+| `certificates` | Controle operacional | Vinculado a `sale_item` (aluno, curso, vendedor e data da venda vêm dele); conclusão, entrega, certificadora (texto) |
+| `app_settings` | Parâmetros editáveis (ex.: comissão por curso) | O valor vigente é copiado nos registros gerados |
+
+### Equipe "da época" × equipe atual
+
+Decisão do cliente: quando o vendedor muda de equipe, **seus leads em aberto o acompanham**, mas **vendas e eventos passados ficam com a equipe em que ocorreram**.
+
+- `users.team_id` e `leads.team_id` = situação **atual**: definem o escopo operacional (o novo supervisor passa a ver os leads; o anterior deixa de ver).
+- `sales.team_id` / `sales.supervisor_id` e `lead_events.team_id` = **retrato do momento**, nunca reescritos. Os R$ 20.000 vendidos por João na Equipe A em setembro continuam na Equipe A.
+- A troca em si fica em `audit_events` (`user.team_changed`) com quem executou, quando e um retrato de origem e destino: equipe e supervisor, com IDs e nomes (**já implementado**). Na fase Leads, a mesma transação atualizará `leads.team_id` dos leads em aberto e gravará um `lead_event` `TEAM_CHANGED` para cada um.
 
 **Comissão não terá tabela própria**: é derivada de `sale_items.commission_cents` de vendas `ACTIVE`. O estorno muda o status da venda e a comissão deixa de contar automaticamente, sem risco de divergência. Se o cliente quiser controlar o **pagamento** de comissões ao vendedor, aí sim cria-se `commission_payouts`.
 
-## 4. Análise do Kanban (estados)
+## 4. Kanban (estados)
 
-As 9 "etapas" listadas misturam três conceitos diferentes. Colocá-las num único enum permitiria estados impossíveis (ex.: lead na Lixeira com prazo de follow-up correndo). Proposta:
+As 9 colunas do Kanban misturam conceitos diferentes. Colocar todas num único enum permitiria estados impossíveis (ex.: lead na Lixeira com prazo de follow-up correndo). Modelo adotado, já com as decisões do cliente:
 
 | Conceito | Modelagem | Valores |
 |---|---|---|
-| **Etapa do funil** (onde está no ciclo atual) | `leads.stage` (enum) | `NEW` (Lead Cadastrado), `NO_ANSWER`, `FOLLOW_UP_1`, `FOLLOW_UP_2`, `FOLLOW_UP_3`, `NEGOTIATION`, `CLOSED` (Fechamento) |
-| **Situação do lead** (ciclo de vida) | `leads.status` (enum) | `ACTIVE`, `TRASHED` (Lixeira), `WON` |
-| **Retrabalho** | atributo do **ciclo**, não etapa | `leads.cycle` (1, 2, 3…) + evento `REDISTRIBUTED` em `lead_events`. A coluna "Retrabalho" do Kanban mostra leads com `cycle > 1` ainda no início do novo ciclo |
-| **Vencimentos** | **derivados** de `stage_due_at < agora` | Follow-up vencido, "aguardando supervisor" (FU3 vencido) e negociação vencida não são gravados como estado: são calculados. Isso dispensa cron e elimina estado desatualizado |
+| **Etapa do funil** | `leads.stage` (enum) | `NEW` (Lead Cadastrado), `NO_ANSWER`, `FOLLOW_UP_1`, `FOLLOW_UP_2`, `FOLLOW_UP_3`, `NEGOTIATION`, `CLOSED` (Fechamento), **`REWORK` (Retrabalho)** |
+| **Situação do lead** | `leads.status` (enum) | `ACTIVE`, `TRASHED` (Lixeira), `WON` |
+| **Ciclo de atendimento** | `lead_cycles` + `leads.current_cycle_id` | `INITIAL` (ciclo 1) e `REWORK` (ciclos 2, 3…) |
+| **Vencimentos** | **derivados** de `stage_due_at < agora` | Follow-up vencido, "aguardando supervisor" (FU3 vencido) e negociação vencida são calculados, não gravados como estado. Sem cron e sem estado desatualizado |
 
-- **Lixeira** é status, não etapa: preserva a etapa e o responsável em que o lead estava, e a recuperação cria um novo ciclo.
+**Prazos:** "1 dia" = **24 horas corridas** (decisão do cliente). `stage_due_at = stage_entered_at + 24h` nos follow-ups; na negociação, `última atualização válida + 24h`. Tudo em `timestamptz`; os parâmetros ficam em `business-rules.ts` (`followUpDeadlineHours`, `negotiationDeadlineHours`).
+
+**Fluxo de retrabalho (decisão do cliente):**
+
+```
+FU3 vencido -> volta para o Supervisor -> Lixeira (status = TRASHED)
+                                       -> Redistribuir: escolhe novo vendedor
+                                            -> fecha o ciclo atual (end_reason = FOLLOW_UP_EXPIRED)
+                                            -> abre ciclo N+1 (kind = REWORK) para o novo vendedor
+                                            -> stage = REWORK (coluna visível no Kanban)
+                                            -> vendedor move: REWORK -> FU1 -> FU2 -> FU3
+```
+
+- **Retrabalho é etapa visível**, e o ciclo registra a tentativa. Cada `lead_event` aponta para o seu ciclo, então "FU1 do 1º atendimento" e "FU1 do retrabalho" ficam distinguíveis no histórico.
+- **Lixeira** é status, não etapa: preserva a etapa e o responsável em que o lead estava. A recuperação também abre um ciclo `REWORK` e coloca o lead em `REWORK` para o vendedor escolhido.
 - **Fechamento** só é alcançado criando uma venda, na mesma transação. Não pode ser movido "à mão".
-- **Bloqueio por negociação vencida**: um guard de backend (`assertSellerNotBlocked`) roda antes de qualquer mutação de lead do vendedor e verifica, via SQL, se existe `stage = NEGOTIATION AND stage_due_at < agora` para ele.
+- **Bloqueio por negociação vencida**: um guard de backend (`assertSellerNotBlocked`) roda antes das mutações de lead do vendedor e verifica, via SQL, se existe `stage = NEGOTIATION AND stage_due_at < agora` para ele.
 
 ## 5. Estratégia de auditoria: combinação
 
@@ -145,7 +168,7 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 | Fase | Escopo | Seções do Documento Mestre |
 |---|---|---|
 | **0. Fundação** ✅ | Projeto, banco, migrations, auth, papéis, equipes, RBAC/escopo, auditoria, layout | §3, §4, §25 |
-| 1. Cursos | Cadastro de cursos, `course_costs` restrito ao admin | §10, §13 |
+| 1. Cursos | Cadastro de cursos, `course_costs` restrito ao admin, lista operacional sem custo | §10, §13 |
 | 2. Leads | Cadastro, normalização e unicidade de telefone, transferência com histórico, `lead_events`/`lead_notes` | §5, §19 |
 | 3. Kanban + Follow-up | Etapas, movimentação manual, prazos, vencidos, fila do supervisor | §6, §7 |
 | 4. Negociação | Observações, vencimento, bloqueio do vendedor | §8 |
@@ -159,7 +182,20 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 | 12. Relatórios | CSV/Excel respeitando escopo | §20 |
 | 13. Endurecimento | E2E, testes de cálculo, revisão de segurança | §24 |
 
-## 8. Decisões técnicas tomadas (não alteram regra de negócio)
+## 8. Decisões
+
+### Decisões do cliente (corrigem ou complementam o Documento Mestre)
+
+| # | Decisão | Onde está refletida |
+|---|---|---|
+| C1 | **Estorno só pelo SUPERVISOR.** O ADMIN tem visão global, mas não executa automaticamente as ações operacionais | `sales:reverse` = `SUPERVISOR` (teste em `tests/authz/policies.test.ts`) |
+| C2 | **"1 dia" = 24 horas corridas** desde a entrada na etapa ou a última atualização válida | `business-rules.ts`, §4 |
+| C3 | **Retrabalho é etapa visível do Kanban**, e o histórico distingue os ciclos de follow-up | `stage = REWORK` + `lead_cycles`, §4 |
+| C4 | **Vendedor que muda de equipe leva os leads em aberto**; vendas e eventos passados ficam com a equipe da época | §3 "Equipe da época × equipe atual"; auditoria da troca com retrato de origem e destino (implementado) |
+| C5 | **Supervisor não tem carteira comercial.** Só o SELLER tem leads, vendas, follow-ups, negociações e comissões | `leads:create` e `sales:create` = `SELLER`; na fase Leads, um trigger garante que `leads.owner_id` seja sempre um SELLER |
+| C6 | **Parcelas**: só a estrutura (número, valor, vencimento, status, data de pagamento). Regras de geração ficam para a fase financeira | §3 |
+
+### Decisões técnicas
 
 - **Política de senha**: mínimo de 8 caracteres; troca pelo próprio usuário exige a senha atual; o admin pode redefinir. Trocar ou redefinir a senha encerra todas as sessões. Não há recuperação por e-mail nesta fase (Documento Mestre §26).
 - **Sessão**: 12 h (`SESSION_TTL_HOURS`), sem renovação deslizante.
@@ -170,25 +206,18 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 
 ## 9. Dúvidas em aberto
 
-Nenhuma bloqueia a fundação. Cada uma deve ser respondida antes da fase indicada.
+Resolvidas pelo cliente: estorno (C1), prazo de 1 dia (C2), retrabalho (C3), troca de equipe (C4), supervisor sem carteira (C5) e parcelas (C6, adiada para a fase financeira). Pendentes:
 
-| # | Dúvida | Divergência / contexto | Padrão atual no código | Fase |
+| # | Dúvida | Contexto | Padrão atual | Fase |
 |---|---|---|---|---|
-| 1 | **Quem pode estornar venda?** | O prompt diz "apenas supervisor"; a matriz §4.4 do Documento Mestre dá ao admin "Administração global" | Só `SUPERVISOR` | 8 |
-| 2 | **O admin executa os fluxos operacionais do supervisor** (redistribuir, lixeira, recuperar)? | §26 recomenda permissão global, "de forma consciente" | Admin incluído em transferir/redistribuir/lixeira/recuperar (§4.1 e §4.4 confirmam) | 3–5 |
-| 3 | Vendedor pode **transferir lead**? | §4.4: "Não confirmado" | Negado | 2 |
-| 4 | Vendedor pode **exportar relatórios** (só os próprios dados)? | §4.4: "Não confirmado"; §20 cita só supervisor/admin | Negado | 12 |
-| 5 | **"1 dia" de prazo**: 24 h corridas a partir da movimentação, ou até o fim do dia seguinte (calendário, America/Sao_Paulo)? | §7 diz "prazo de 1 dia"; §8 diz "no dia seguinte sem atualização" | Centralizado em `business-rules.ts`, sem uso ainda | 3–4 |
-| 6 | **Retrabalho**: o lead fica numa coluna "Retrabalho" até o novo vendedor movê-lo para FU1, ou entra direto em FU1? Quando começa a contar o prazo do FU1? | §6 trata Retrabalho como etapa; §7 diz "inicia novamente FU1" | — | 5 |
-| 7 | **Depois da venda**: o lead fica em "Fechamento" para sempre? Pode comprar de novo depois? Se a venda for **estornada**, o lead volta para qual etapa? | Não definido | — | 6, 8 |
-| 8 | **Vendedor muda de equipe**: os leads em aberto dele vão junto (o novo supervisor passa a vê-los) ou ficam na equipe antiga para redistribuição? | §3 só diz que o admin pode trocar | Vendas guardarão a equipe da época (snapshot) | 2 |
-| 9 | **Supervisor vê lucro/custo agregado do time?** | §17.2: "visibilidade financeira… sem exposição do custo unitário"; o prompt diz "não pode visualizar custos" | Custo e lucro só para admin | 6, 10 |
-| 10 | **Supervisor também vende** (tem leads e vendas próprios e entra no ranking de vendedores)? | §4.4: "Ver próprios leads/vendas: Supervisor Sim" | Matriz permite `leads:create`/`sales:create` ao supervisor; ranking a definir | 2, 9 |
-| 11 | **"Por curso/aluno"**: uma venda pode incluir cursos de **alunos diferentes** (ex.: família)? Se sim, cada item precisa do nome do aluno (afeta Certificados) | §14 e RA-03 | Item = curso; aluno = lead da venda | 6 |
-| 12 | **Custo de bolsa alterado**: vendas antigas mantêm o custo da época? | §26 lista como pendente | Proposta: sim (snapshot em `sale_items`) | 1, 6 |
-| 13 | **Pix**: registrado como pago na data da venda (uma "parcela" paga)? Existe Pix parcelado/agendado? | §12.1 só diz "Pix" | Proposta: 1 parcela, paga na data da venda | 7 |
-| 14 | **Parcelas do cartão**: datas de vencimento (mensal a partir da venda?), qual parcela absorve o resto de centavos, edição de vencimento, atraso, baixa parcial | §12.2 e §26 dizem explicitamente que não está definido | — | 7 |
-| 15 | **Negociação vencida bloqueia o quê exatamente?** O vendedor ainda pode registrar venda de outro lead, marcar parcela paga e operar certificados? | §8: "cadastrar novos leads ou movimentar outras frentes do Kanban" | Proposta: bloquear criação de lead e movimentação de outros leads; parcelas e certificados liberados | 4 |
-| 16 | **FU3 vencido**: o lead continua com o mesmo responsável (só some da fila dele) até o supervisor decidir? | §7 | Proposta: mantém o responsável e fica marcado como "aguardando supervisor" | 3 |
-| 17 | Campos adicionais do lead (e-mail, CPF, cidade)? | §26 | Só os campos mínimos | 2 |
-| 18 | Formato e colunas de cada relatório | §26 | — | 12 |
+| 1 | O **admin executa os fluxos operacionais de leads** (transferir, redistribuir, lixeira, recuperar)? | §4.1 e §4.4 dizem que sim; a decisão C1 diz que visão global ≠ operação | Matriz permite ao admin (conforme §4.1/§4.4); confirmar | Leads |
+| 2 | Vendedor pode **transferir lead**? | §4.4: "Não confirmado" | Negado | Leads |
+| 3 | Vendedor pode **exportar relatórios** (só os próprios dados)? | §4.4: "Não confirmado" | Negado | Relatórios |
+| 4 | **Depois da venda**: o lead fica em Fechamento? Pode comprar de novo depois? Se a venda for **estornada**, volta para qual etapa? | Não definido | — | Vendas/Estorno |
+| 5 | **Supervisor vê lucro/custo agregado do time?** | §17.2 × regra "não visualiza custos" | Custo e lucro só para admin | Dashboards |
+| 6 | **"Por curso/aluno"**: uma venda pode ter cursos de **alunos diferentes**? | §14 e RA-03 | Item = curso; aluno = lead da venda | Vendas |
+| 7 | **Custo de bolsa alterado**: vendas antigas mantêm o custo da época? | §26 | Proposta: sim (snapshot em `sale_items`) | Vendas |
+| 8 | **Negociação vencida bloqueia o quê exatamente?** | §8: "cadastrar novos leads ou movimentar outras frentes do Kanban" | Proposta: bloquear criação de lead e movimentação de outros leads; parcelas e certificados liberados | Negociação |
+| 9 | **FU3 vencido**: o lead continua com o mesmo responsável (só some da fila dele) até o supervisor decidir? | §7 | Proposta: mantém o responsável, marcado como "aguardando supervisor" | Kanban |
+| 10 | Campos adicionais do lead (e-mail, CPF, cidade)? | §26 | Só os campos mínimos | Leads |
+| 11 | Formato e colunas de cada relatório | §26 | — | Relatórios |

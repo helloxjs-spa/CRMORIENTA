@@ -126,7 +126,14 @@ describe("administrador", () => {
       .select()
       .from(auditEvents)
       .where(and(eq(auditEvents.action, "user.team_changed"), eq(auditEvents.entityId, org.ids.sellerB1)));
-    expect(event.metadata).toEqual({ fromTeamId: org.ids.teamB, toTeamId: org.ids.teamA });
+    expect(event.actorId).toBe(org.ids.admin);
+    expect(event.occurredAt).toBeInstanceOf(Date);
+    expect(event.metadata).toEqual({
+      fromTeamId: org.ids.teamB,
+      toTeamId: org.ids.teamA,
+      from: { teamId: org.ids.teamB, teamName: "Equipe B", supervisorId: org.ids.supB, supervisorName: "Supervisor B" },
+      to: { teamId: org.ids.teamA, teamName: "Equipe A", supervisorId: org.ids.supA, supervisorName: "Supervisor A" },
+    });
 
     // O escopo do supervisor acompanha a mudança imediatamente.
     await expect(getUser(await org.ctx(org.ids.supA), org.ids.sellerB1)).resolves.toBeTruthy();

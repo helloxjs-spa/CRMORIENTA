@@ -9,6 +9,10 @@ import type { Actor } from "./actor";
  *
  * Itens marcados "Não confirmado" no Documento Mestre ficam NEGADOS até
  * decisão do cliente (ver docs/ARQUITETURA.md, Dúvidas).
+ *
+ * Decisões do cliente que corrigem o Documento Mestre (docs/ARQUITETURA.md §8):
+ * - Somente SELLER possui carteira comercial (leads e vendas próprios).
+ * - Somente SUPERVISOR executa estorno; ADMIN tem visão global, não operação.
  */
 const MATRIX = {
   // Organização (fase 1)
@@ -19,14 +23,16 @@ const MATRIX = {
   "audit:view": ["ADMIN"],
 
   // Comercial (fases seguintes; declarado aqui para manter a matriz única)
-  "leads:create": ["ADMIN", "SUPERVISOR", "SELLER"],
+  "leads:create": ["SELLER"],
   "leads:transfer": ["ADMIN", "SUPERVISOR"],
   "leads:redistribute": ["ADMIN", "SUPERVISOR"],
   "leads:trash": ["ADMIN", "SUPERVISOR"],
   "leads:restore": ["ADMIN", "SUPERVISOR"],
-  "sales:create": ["ADMIN", "SUPERVISOR", "SELLER"],
+  "sales:create": ["SELLER"],
   "sales:reverse": ["SUPERVISOR"],
   "installments:markPaid": ["ADMIN", "SUPERVISOR", "SELLER"],
+  /** Lista operacional de cursos ATIVOS, sem custo (usada em leads e vendas). */
+  "courses:list": ["ADMIN", "SUPERVISOR", "SELLER"],
   "courses:manage": ["ADMIN"],
   "courses:viewCost": ["ADMIN"],
   "finance:viewCostAndProfit": ["ADMIN"],

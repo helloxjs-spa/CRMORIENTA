@@ -35,6 +35,20 @@ describe("RBAC — matriz de permissões", () => {
     }
   });
 
+  it("somente o vendedor possui carteira comercial (leads e vendas próprios)", () => {
+    for (const permission of ["leads:create", "sales:create"] as const) {
+      expect(hasPermission(sellerA1, permission)).toBe(true);
+      expect(hasPermission(supA, permission)).toBe(false);
+      expect(hasPermission(admin, permission)).toBe(false);
+    }
+  });
+
+  it("somente o supervisor estorna vendas (admin não)", () => {
+    expect(hasPermission(supA, "sales:reverse")).toBe(true);
+    expect(hasPermission(admin, "sales:reverse")).toBe(false);
+    expect(hasPermission(sellerA1, "sales:reverse")).toBe(false);
+  });
+
   it("todos os perfis veem o ranking e marcam parcelas como pagas", () => {
     for (const actor of [admin, supA, sellerA1]) {
       expect(hasPermission(actor, "ranking:view")).toBe(true);
