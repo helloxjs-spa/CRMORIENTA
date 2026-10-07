@@ -43,7 +43,7 @@ export function navigationFor(actor: Actor): NavSection[] {
     management.push({ label: "Minha equipe", href: `/equipes/${actor.supervisedTeamId}`, icon: "team" });
   }
   if (hasPermission(actor, "users:manage")) management.push({ label: "Usuários", href: "/usuarios", icon: "users" });
-  if (hasPermission(actor, "courses:manage")) management.push({ label: "Cursos", href: "/cursos", icon: "courses", soon: true });
+  if (hasPermission(actor, "courses:manage")) management.push({ label: "Cursos", href: "/cursos", icon: "courses" });
   if (hasPermission(actor, "audit:view")) management.push({ label: "Auditoria", href: "/auditoria", icon: "audit" });
 
   const sections: NavSection[] = [

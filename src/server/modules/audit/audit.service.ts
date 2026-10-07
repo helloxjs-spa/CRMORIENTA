@@ -19,6 +19,11 @@ export const AUDIT_ACTIONS = {
   "team.created": "Equipe criada",
   "team.updated": "Equipe atualizada",
   "team.supervisor_changed": "Supervisor da equipe alterado",
+  "course.created": "Curso criado",
+  "course.updated": "Curso atualizado",
+  "course.cost_changed": "Custo da bolsa alterado",
+  "course.activated": "Curso reativado",
+  "course.deactivated": "Curso desativado",
 } as const;
 
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
@@ -26,7 +31,7 @@ export type AuditAction = keyof typeof AUDIT_ACTIONS;
 export type AuditInput = {
   actorId: string | null;
   action: AuditAction;
-  entityType: "user" | "team" | "session";
+  entityType: "user" | "team" | "session" | "course";
   entityId?: string | null;
   teamId?: string | null;
   metadata?: Record<string, unknown>;

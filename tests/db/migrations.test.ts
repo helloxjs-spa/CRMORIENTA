@@ -19,11 +19,11 @@ describe("migrations", () => {
     await expect(handle.migrate()).resolves.toBeUndefined();
   });
 
-  it("criam as tabelas da fundação", async () => {
+  it("criam as tabelas esperadas", async () => {
     const { rows } = (await handle.db.execute(
       sql`select table_name from information_schema.tables where table_schema = 'public' order by table_name`,
     )) as unknown as { rows: { table_name: string }[] };
-    expect(rows.map((r) => r.table_name)).toEqual(["audit_events", "sessions", "teams", "users"]);
+    expect(rows.map((r) => r.table_name)).toEqual(["audit_events", "course_costs", "courses", "sessions", "teams", "users"]);
   });
 });
 

@@ -7,23 +7,15 @@ import {
   pgEnum,
   pgTable,
   text,
-  timestamp,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { timestamps } from "./columns";
 
 export const USER_ROLES = ["ADMIN", "SUPERVISOR", "SELLER"] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
 export const userRole = pgEnum("user_role", USER_ROLES);
-
-const timestamps = {
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow()
-    .$onUpdate(() => new Date()),
-};
 
 /**
  * Usuários do sistema. Um vendedor pertence a no máximo uma equipe por vez

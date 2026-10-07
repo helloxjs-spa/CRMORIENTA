@@ -53,7 +53,7 @@ PostgreSQL .............. Constraints, índices únicos e triggers como defesa e
   - `ADMIN` → tudo; `SUPERVISOR` → registros da equipe que lidera; `SELLER` → registros dos quais é responsável.
   - `ownedScope(actor, {ownerId, teamId})` gera o filtro SQL que **toda** consulta de recurso com dono compõe, inclusive buscas por ID. Trocar o ID na URL/payload simplesmente não encontra o registro → **404, nunca 403** (não revela existência).
 - **Actor** é recarregado do banco a cada requisição: mudança de equipe, desativação ou troca de supervisor valem imediatamente.
-- **Custos de bolsa** (fase Cursos): ficarão em tabela própria (`course_costs`), lida apenas por funções que exigem `courses:viewCost`. Assim, nenhuma consulta de vendedor/supervisor tem como selecionar a coluna por engano.
+- **Custos de bolsa**: ficam em tabela própria (`course_costs`), lida apenas pelas funções `*WithCost`, que exigem `courses:viewCost` (ADMIN). Nenhuma consulta de vendedor/supervisor tem como selecionar a coluna por engano. Detalhes em [Cursos](#cursos-fase-1).
 - **Mass assignment**: Server Actions leem campos nominalmente; serviços validam com `z.strictObject` e nunca espalham o input em `insert/update`.
 - **Server Actions são endpoints públicos**: cada uma revalida sessão e permissões no serviço. Verificado chamando a action diretamente com sessão de vendedor/supervisor (bloqueado).
 
@@ -61,7 +61,7 @@ PostgreSQL .............. Constraints, índices únicos e triggers como defesa e
 
 Valores monetários sempre em **centavos (integer)**. Datas em `timestamptz` (UTC); "dia", vencimentos e filtros de período usam o fuso único **America/Sao_Paulo** ([`business-rules.ts`](../src/server/config/business-rules.ts)). Nada de negócio é apagado fisicamente.
 
-### Implementado na fundação
+### Implementado
 
 | Tabela | Papel | Regras no banco |
 |---|---|---|
@@ -69,6 +69,8 @@ Valores monetários sempre em **centavos (integer)**. Datas em `timestamptz` (UT
 | `teams` | Equipe comercial, `supervisor_id` | nome único (sem diferenciar maiúsculas); um supervisor lidera no máximo uma equipe; `supervisor_id` precisa ser `SUPERVISOR` (trigger) |
 | `sessions` | Sessões de login | id = SHA-256 do token; cascade ao remover usuário |
 | `audit_events` | Log central de auditoria | **append-only** (trigger bloqueia UPDATE/DELETE) |
+| `courses` *(Fase 1)* | Curso: nome, ativo/inativo, timestamps | nome único (sem diferenciar maiúsculas); **sem coluna de custo**; DELETE bloqueado por trigger |
+| `course_costs` *(Fase 1)* | Custo da bolsa em centavos (1:1 com o curso), `updated_at`, `updated_by` | `cost_cents >= 0`; DELETE bloqueado por trigger |
 
 Relação **Empresa → Supervisor → Vendedores**: empresa única (implícita); `teams.supervisor_id` (1:1) e `users.team_id` (N:1).
 
@@ -81,8 +83,6 @@ Relação **Empresa → Supervisor → Vendedores**: empresa única (implícita)
 | `lead_interests` | Cursos de interesse (N:N lead↔curso) | O documento fala em "curso(s) de interesse" |
 | `lead_events` | **Linha do tempo do lead** (append-only) | Um registro por fato, sempre com `cycle_id`, `actor_id`, `occurred_at` e **retrato da equipe** (`team_id` no momento): criação, mudança de etapa (de/para), transferência (responsável/equipe de/para), mudança de equipe por troca do vendedor, redistribuição, lixeira, recuperação, venda. Substitui `LeadAssignmentHistory` + `LeadStageHistory` sem redundância |
 | `lead_notes` | Observações e atualizações de negociação | Imutáveis; nova observação nunca sobrescreve; `lead_events` referencia a nota |
-| `courses` | Curso (nome, ativo) | Sem coluna de custo (ver Fase Cursos) |
-| `course_costs` | Custo de bolsa (1:1 com o curso) | Tabela separada, lida e escrita só pelo ADMIN. Histórico de alterações no `audit_events` (`course.cost_changed`) |
 | `sales` | Cabeçalho: lead, vendedor, **`team_id` e `supervisor_id` da época (snapshot)**, data, valor total, forma de pagamento, status (`ACTIVE`/`REVERSED`), dados do estorno (quem, quando, motivo) | Faturamento, ranking e dashboards por equipe agrupam por `sales.team_id`, **nunca** pela equipe atual do vendedor. Estorno = colunas na própria venda (1:1) |
 | `sale_items` | Um curso vendido | Snapshot de `scholarship_cost_cents` e `commission_cents` no momento da venda: relatórios históricos não mudam quando custo ou comissão mudarem |
 | `installments` | Parcelas | `number`, `amount_cents`, `due_date`, `status` (`PENDING`/`PAID`), `paid_at`, `paid_by`; `UNIQUE(sale_id, number)`. Regras de geração (primeira data, recorrência, centavos) só serão definidas na fase financeira |
@@ -98,6 +98,19 @@ Decisão do cliente: quando o vendedor muda de equipe, **seus leads em aberto o 
 - A troca em si fica em `audit_events` (`user.team_changed`) com quem executou, quando e um retrato de origem e destino: equipe e supervisor, com IDs e nomes (**já implementado**). Na fase Leads, a mesma transação atualizará `leads.team_id` dos leads em aberto e gravará um `lead_event` `TEAM_CHANGED` para cada um.
 
 **Comissão não terá tabela própria**: é derivada de `sale_items.commission_cents` de vendas `ACTIVE`. O estorno muda o status da venda e a comissão deixa de contar automaticamente, sem risco de divergência. Se o cliente quiser controlar o **pagamento** de comissões ao vendedor, aí sim cria-se `commission_payouts`.
+
+### Cursos (Fase 1)
+
+| Função do serviço | Quem pode | O que retorna |
+|---|---|---|
+| `listActiveCourseOptions` | ADMIN, SUPERVISOR, SELLER (`courses:list`) | Somente `{ id, name }` de cursos **ativos**. É a lista que leads e vendas vão usar |
+| `listCoursesWithCost` / `getCourseWithCost` | ADMIN (`courses:viewCost`) | Ativos e inativos, com `scholarshipCostCents` |
+| `createCourse` / `updateCourse` / `setCourseActive` | ADMIN (`courses:manage`) | Criação e edição de nome e custo; ativação/desativação. Sem exclusão |
+
+- **Separação física:** o custo fica em `course_costs`. O tipo `CourseOption` não tem campo de custo, então nem por engano ele é serializado para outros perfis.
+- **Auditoria:** `course.created`, `course.updated`, `course.cost_changed` (de/para, em centavos), `course.activated` e `course.deactivated`. Esses eventos têm `team_id = NULL`, então ficam de fora de uma futura auditoria por equipe para supervisores.
+- **Dinheiro:** o valor digitado ("1.234,56") é convertido para centavos em [`src/lib/money.ts`](../src/lib/money.ts) sem ponto flutuante. O serviço só aceita inteiros entre 0 e R$ 1.000.000,00.
+- **Tela** `/cursos`: exclusiva do ADMIN (404 para os demais). Busca, filtro de status, criar, editar e ativar/desativar.
 
 ## 4. Kanban (estados)
 
@@ -168,7 +181,7 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 | Fase | Escopo | Seções do Documento Mestre |
 |---|---|---|
 | **0. Fundação** ✅ | Projeto, banco, migrations, auth, papéis, equipes, RBAC/escopo, auditoria, layout | §3, §4, §25 |
-| 1. Cursos | Cadastro de cursos, `course_costs` restrito ao admin, lista operacional sem custo | §10, §13 |
+| **1. Cursos** ✅ | Cadastro de cursos, `course_costs` restrito ao admin, lista operacional sem custo | §10, §13 |
 | 2. Leads | Cadastro, normalização e unicidade de telefone, transferência com histórico, `lead_events`/`lead_notes` | §5, §19 |
 | 3. Kanban + Follow-up | Etapas, movimentação manual, prazos, vencidos, fila do supervisor | §6, §7 |
 | 4. Negociação | Observações, vencimento, bloqueio do vendedor | §8 |
@@ -221,3 +234,11 @@ Resolvidas pelo cliente: estorno (C1), prazo de 1 dia (C2), retrabalho (C3), tro
 | 9 | **FU3 vencido**: o lead continua com o mesmo responsável (só some da fila dele) até o supervisor decidir? | §7 | Proposta: mantém o responsável, marcado como "aguardando supervisor" | Kanban |
 | 10 | Campos adicionais do lead (e-mail, CPF, cidade)? | §26 | Só os campos mínimos | Leads |
 | 11 | Formato e colunas de cada relatório | §26 | — | Relatórios |
+| 12 | **Telefone**: só números brasileiros? DDD obrigatório? O 9º dígito do celular é obrigatório (para não tratar `11 9xxxx-xxxx` e `11 xxxx-xxxx` como leads diferentes)? | §5.2 só diz "normalizado" | Proposta: só BR, DDD obrigatório, armazenado como `+55DDDNÚMERO` | Leads |
+| 13 | **Telefone duplicado de lead na Lixeira**: bloquear e informar "lead na lixeira, peça ao supervisor para recuperar"? | §5.2 não trata a Lixeira | Proposta: bloquear, informando a situação e a equipe responsável | Leads |
+| 14 | **O que a mensagem de duplicidade mostra** a um vendedor de outra equipe: nome do responsável, equipe, etapa? | §5.2: "informação suficiente para identificar quem está responsável" | Proposta: nome do vendedor e equipe; nada sobre o lead além disso | Leads |
+| 15 | **Supervisor transfere lead para vendedor de outra equipe?** | §4.2 | Proposta: supervisor só dentro da própria equipe; admin entre equipes | Leads |
+| 16 | **Curso de interesse** no cadastro: obrigatório? Um ou vários? | §5.1: "quando aplicável" | Proposta: opcional, vários, só cursos ativos | Leads |
+| 17 | **Data de cadastro do lead**: sempre a hora do servidor, ou o vendedor pode informar uma data retroativa? | §5.1 | Proposta: hora do servidor, imutável | Leads |
+| 18 | **Vendedor desativado** com leads em aberto: os leads vão para a fila do supervisor para redistribuição? | Não definido | Proposta: sim, aparecem como "aguardando redistribuição" | Leads |
+| 19 | **Instituição do curso**: o mesmo curso em instituições diferentes (com custos diferentes) é um curso por instituição, ou falta um campo "instituição"? | §10: custo "inclusive em função do curso/instituição" | Hoje: nome único; diferenciar pelo nome (ex.: "Pedagogia — Instituição X") | Leads/Vendas |
