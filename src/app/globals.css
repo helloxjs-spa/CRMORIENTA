@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+@theme {
+  /* Identidade visual — cor principal #082B59 (brand-800) */
+  --color-brand-50: #eef3fa;
+  --color-brand-100: #d7e2f1;
+  --color-brand-200: #afc4e3;
+  --color-brand-300: #7e9fcf;
+  --color-brand-400: #4f78b6;
+  --color-brand-500: #2d5a9b;
+  --color-brand-600: #17447f;
+  --color-brand-700: #0e3568;
+  --color-brand-800: #082b59;
+  --color-brand-900: #062146;
+  --color-brand-950: #041631;
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+}
+
+dialog::backdrop {
+  background: rgb(4 22 49 / 0.45);
+  backdrop-filter: blur(2px);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
