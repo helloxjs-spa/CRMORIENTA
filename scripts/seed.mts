@@ -3,11 +3,24 @@
  * tabela correspondente estiver vazia:
  * - Organização: 1 administrador, 4 supervisores (cada um com sua equipe) e
  *   10 vendedores por equipe, todos com a senha SEED_PASSWORD (padrão: Senha@123).
- * - Cursos: alguns cursos com custos de bolsa ilustrativos.
+ * - Cursos: alguns cursos (inclusive o mesmo curso em duas instituições) com
+ *   custos de bolsa ilustrativos.
+ *
+ * Por padrão só roda no PGlite local. Contra o Supabase exige --allow-remote,
+ * pois cria usuários fictícios com senha conhecida no banco real.
  */
 import { loadEnv } from "./env.mjs";
 
 loadEnv();
+
+const databaseUrl = process.env.DATABASE_URL ?? "";
+if (databaseUrl && !databaseUrl.startsWith("pglite://") && !process.argv.includes("--allow-remote")) {
+  console.error(
+    "Seed bloqueado: a DATABASE_URL aponta para um PostgreSQL remoto (Supabase). " +
+      "Ele criaria usuários fictícios com senha conhecida. Se for realmente isso, rode: npm run db:seed -- --allow-remote",
+  );
+  process.exit(1);
+}
 
 if (process.env.NODE_ENV === "production" && !process.argv.includes("--force")) {
   console.error("Seed bloqueado em produção. Use --force se tiver certeza.");
@@ -23,16 +36,17 @@ const TEAMS = ["Equipe Alfa", "Equipe Beta", "Equipe Gama", "Equipe Delta"];
 const SUPERVISORS = ["Ana Souza", "Bruno Lima", "Carla Mendes", "Diego Rocha"];
 const FIRST_NAMES = ["Lucas", "Mariana", "Pedro", "Juliana", "Rafael", "Camila", "Thiago", "Fernanda", "Gabriel", "Larissa"];
 const LAST_NAMES = ["Alves", "Barbosa", "Costa", "Dias", "Ferreira", "Gomes", "Martins", "Nunes"];
-// [nome, custo da bolsa em centavos, ativo]
-const COURSES: [string, number, boolean][] = [
-  ["Administração", 280_00, true],
-  ["Ciências Contábeis", 260_00, true],
-  ["Direito", 450_00, true],
-  ["Enfermagem", 390_00, true],
-  ["Pedagogia", 300_00, true],
-  ["Psicologia", 420_00, true],
-  ["Gestão de Recursos Humanos", 220_00, true],
-  ["Letras (descontinuado)", 180_00, false],
+// [curso, instituição, custo da bolsa em centavos, ativo]
+const COURSES: [string, string, number, boolean][] = [
+  ["Administração", "Faculdade Alpha", 280_00, true],
+  ["Ciências Contábeis", "Faculdade Alpha", 260_00, true],
+  ["Direito", "Universidade Gama", 450_00, true],
+  ["Enfermagem", "Universidade Gama", 390_00, true],
+  ["Pedagogia", "Faculdade Alpha", 300_00, true],
+  ["Pedagogia", "Faculdade Beta", 420_00, true],
+  ["Psicologia", "Faculdade Beta", 420_00, true],
+  ["Gestão de Recursos Humanos", "Faculdade Beta", 220_00, true],
+  ["Letras", "Faculdade Alpha", 180_00, false],
 ];
 
 const slug = (s: string) =>
@@ -79,8 +93,8 @@ if (hasCourses) {
   console.log("Cursos: já existem cursos; bloco ignorado.");
 } else {
   await db.transaction(async (tx) => {
-    for (const [name, costCents, active] of COURSES) {
-      const [course] = await tx.insert(courses).values({ name, active }).returning({ id: courses.id });
+    for (const [name, institutionName, costCents, active] of COURSES) {
+      const [course] = await tx.insert(courses).values({ name, institutionName, active }).returning({ id: courses.id });
       await tx.insert(courseCosts).values({ courseId: course.id, costCents });
     }
   });

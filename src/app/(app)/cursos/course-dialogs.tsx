@@ -10,17 +10,34 @@ function CourseFields({
   errors,
   idPrefix,
   name,
+  institutionName,
   costCents,
 }: {
   errors: Record<string, string[]>;
   idPrefix: string;
   name?: string;
+  institutionName?: string;
   costCents?: number;
 }) {
   return (
     <>
       <Field label="Nome do curso" htmlFor={`${idPrefix}-name`} errors={errors.name}>
-        <Input id={`${idPrefix}-name`} name="name" defaultValue={name} required maxLength={150} />
+        <Input id={`${idPrefix}-name`} name="name" defaultValue={name} required maxLength={150} placeholder="Ex.: Pedagogia" />
+      </Field>
+      <Field
+        label="Instituição"
+        htmlFor={`${idPrefix}-institution`}
+        errors={errors.institutionName}
+        hint="O mesmo curso pode ser cadastrado em instituições diferentes, cada uma com seu custo."
+      >
+        <Input
+          id={`${idPrefix}-institution`}
+          name="institutionName"
+          defaultValue={institutionName}
+          required
+          maxLength={150}
+          placeholder="Ex.: Faculdade Alpha"
+        />
       </Field>
       <Field
         label="Custo da bolsa (R$)"
@@ -49,7 +66,11 @@ export function CreateCourseDialog() {
   );
 }
 
-export function EditCourseDialog({ course }: { course: { id: string; name: string; scholarshipCostCents: number } }) {
+export function EditCourseDialog({
+  course,
+}: {
+  course: { id: string; name: string; institutionName: string; scholarshipCostCents: number };
+}) {
   return (
     <ActionDialog
       trigger={{ label: "Editar", icon: Pencil, variant: "ghost", size: "sm" }}
@@ -60,7 +81,13 @@ export function EditCourseDialog({ course }: { course: { id: string; name: strin
       {(errors) => (
         <>
           <input type="hidden" name="courseId" value={course.id} />
-          <CourseFields errors={errors} idPrefix={`course-${course.id}`} name={course.name} costCents={course.scholarshipCostCents} />
+          <CourseFields
+            errors={errors}
+            idPrefix={`course-${course.id}`}
+            name={course.name}
+            institutionName={course.institutionName}
+            costCents={course.scholarshipCostCents}
+          />
         </>
       )}
     </ActionDialog>

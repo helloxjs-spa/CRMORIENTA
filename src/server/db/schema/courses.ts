@@ -4,19 +4,26 @@ import { timestamps } from "./columns";
 import { users } from "./organization";
 
 /**
- * Curso. Propositalmente SEM coluna de custo: qualquer consulta a esta tabela
- * (inclusive `select *`) é segura para vendedor e supervisor.
- * Cursos nunca são apagados (podem estar em leads/vendas); usa-se `active`.
+ * Curso oferecido por uma instituição (o mesmo curso pode existir em várias,
+ * com custos diferentes). Propositalmente SEM coluna de custo: qualquer
+ * consulta a esta tabela (inclusive `select *`) é segura para vendedor e
+ * supervisor. Cursos nunca são apagados; usa-se `active`.
+ * Espelha database/migrations/001_supabase_initial_schema.sql.
  */
 export const courses = pgTable(
   "courses",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     name: text("name").notNull(),
+    institutionName: text("institution_name").notNull(),
     active: boolean("active").notNull().default(true),
     ...timestamps,
   },
-  (t) => [uniqueIndex("courses_name_unique").on(sql`lower(${t.name})`)],
+  (t) => [
+    uniqueIndex("courses_name_institution_unique").on(sql`lower(btrim(${t.name}))`, sql`lower(btrim(${t.institutionName}))`),
+    check("courses_name_not_blank", sql`btrim(${t.name}) <> ''`),
+    check("courses_institution_not_blank", sql`btrim(${t.institutionName}) <> ''`),
+  ],
 );
 
 /**

@@ -47,7 +47,7 @@ export default async function CoursesPage({ searchParams }: PageProps<"/cursos">
       <form className="mb-4 flex flex-wrap items-center gap-2" role="search">
         <div className="relative min-w-56 flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" aria-hidden />
-          <input name="q" defaultValue={search} placeholder="Buscar curso" className={`${filterInput} w-full pl-9`} aria-label="Buscar curso" />
+          <input name="q" defaultValue={search} placeholder="Buscar por curso ou instituição" className={`${filterInput} w-full pl-9`} aria-label="Buscar por curso ou instituição" />
         </div>
         <select name="status" defaultValue={statusFilter ?? ""} className={filterInput} aria-label="Status">
           <option value="">Todos os status</option>
@@ -76,6 +76,7 @@ export default async function CoursesPage({ searchParams }: PageProps<"/cursos">
             <thead>
               <tr>
                 <Th>Curso</Th>
+                <Th>Instituição</Th>
                 <Th>Status</Th>
                 <Th className="text-right">Custo da bolsa</Th>
                 <Th>Custo atualizado em</Th>
@@ -88,6 +89,7 @@ export default async function CoursesPage({ searchParams }: PageProps<"/cursos">
               {list.map((course) => (
                 <tr key={course.id} className={course.active ? undefined : "bg-slate-50/60"}>
                   <Td className={course.active ? "font-medium text-slate-900" : "font-medium text-slate-400"}>{course.name}</Td>
+                  <Td className={course.active ? undefined : "text-slate-400"}>{course.institutionName}</Td>
                   <Td>{course.active ? <Badge tone="success">Ativo</Badge> : <Badge>Inativo</Badge>}</Td>
                   <Td className="text-right tabular-nums">{formatBRL(course.scholarshipCostCents)}</Td>
                   <Td className="tabular-nums text-slate-500">{formatDateTime(course.costUpdatedAt)}</Td>
@@ -98,7 +100,11 @@ export default async function CoursesPage({ searchParams }: PageProps<"/cursos">
                         action={setCourseActiveAction}
                         fields={{ courseId: course.id, active: String(!course.active) }}
                         variant={course.active ? "ghost" : "secondary"}
-                        confirm={course.active ? `Desativar "${course.name}"? Ele deixará de aparecer nos cadastros de leads e vendas.` : undefined}
+                        confirm={
+                          course.active
+                            ? `Desativar "${course.name}" (${course.institutionName})? Ele deixará de aparecer nos cadastros de leads e vendas.`
+                            : undefined
+                        }
                       >
                         {course.active ? "Desativar" : "Reativar"}
                       </ActionButton>

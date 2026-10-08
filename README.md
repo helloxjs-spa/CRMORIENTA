@@ -4,33 +4,45 @@ CRM web para a operação comercial de um polo educacional: equipes, vendedores,
 
 - **Regras de negócio:** [`docs/Documento_Mestre_CRM_Polo_Educacional.pdf`](docs/Documento_Mestre_CRM_Polo_Educacional.pdf)
 - **Arquitetura, modelo de dados, fases e dúvidas em aberto:** [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md)
+- **Banco de dados (Supabase) e fluxo de alterações:** [`database/README.md`](database/README.md)
 
 **Status:** Fase 0 (Fundação) e Fase 1 (Cursos) concluídas.
 
 - **Fundação:** autenticação, perfis (Administrador, Supervisor, Vendedor), equipes, autorização no backend (RBAC + ownership + escopo de equipe), auditoria e layout autenticado.
-- **Cursos:** cadastro com custo da bolsa visível e editável só pelo administrador; lista de cursos ativos sem custo para os demais perfis.
+- **Cursos:** curso + instituição, com custo da bolsa visível e editável só pelo administrador; lista de cursos ativos (curso e instituição, sem custo) para os demais perfis.
 
 Os módulos comerciais seguintes aparecem no menu como "em breve".
+
+## Banco de dados
+
+O banco oficial é o **PostgreSQL do Supabase**, usado só como Postgres hospedado (a autenticação é própria do CRM, não usa Supabase Auth).
+
+- O schema é criado e alterado **manualmente**, executando os SQLs de [`database/migrations/`](database/migrations) no SQL Editor do Supabase. A aplicação nunca altera o schema remoto.
+- Os testes automatizados usam **PGlite** (Postgres em memória), que aplica exatamente os mesmos SQLs.
 
 ## Requisitos
 
 - Node.js **20.9+** (testado com 22)
-- Não precisa de Docker nem de Postgres instalado em desenvolvimento: o projeto usa o **PGlite** (Postgres embutido) gravado em `.data/`.
+- Um projeto Supabase com os SQLs de `database/migrations/` já executados
 
 ## Como rodar
 
 ```bash
 npm install
 cp .env.example .env      # Windows (PowerShell): Copy-Item .env.example .env
-npm run setup             # aplica as migrations e cria os usuários fictícios
+# edite .env e defina DATABASE_URL com a connection string do Supabase
 npm run dev               # http://localhost:3000
 ```
 
-> **PGlite:** só um processo pode abrir o banco local por vez. Pare o `npm run dev` antes de rodar `db:migrate`, `db:seed` ou `db:reset`.
+**Connection string:** no painel do Supabase, use **Connect › Session pooler** (porta 5432) ou a conexão direta, e acrescente `?sslmode=require`. Nunca faça commit do `.env`.
 
-### Usuários fictícios (seed)
+**Primeiro acesso:** o banco começa vazio. O primeiro administrador precisa ser criado antes do login (procedimento definido na próxima etapa).
 
-Senha de todos: `Senha@123` (configurável em `SEED_PASSWORD`).
+### Banco local opcional (sem Supabase)
+
+Para experimentar sem tocar no Supabase, use `DATABASE_URL=pglite://.data/pglite` e rode `npm run setup`, que aplica os SQLs e cria dados fictícios. Só um processo pode abrir o PGlite por vez: pare o `npm run dev` antes de `db:migrate`, `db:seed` ou `db:reset`.
+
+Usuários fictícios do seed (senha `Senha@123`, configurável em `SEED_PASSWORD`):
 
 | Perfil | E-mail |
 |---|---|
@@ -40,7 +52,7 @@ Senha de todos: `Senha@123` (configurável em `SEED_PASSWORD`).
 | Vendedor (Equipe Alfa) | `lucas.alves.alfa@polo.local` |
 | Vendedora (Equipe Beta) | `mariana.ferreira.beta@polo.local` |
 
-Ao todo: 1 admin, 4 supervisores com suas equipes (Alfa, Beta, Gama, Delta), 10 vendedores por equipe e 8 cursos (1 inativo). Os e-mails dos vendedores seguem o padrão `nome.sobrenome.equipe@polo.local`; a lista completa está na tela **Usuários** do admin.
+Ao todo: 1 admin, 4 supervisores com suas equipes (Alfa, Beta, Gama, Delta), 10 vendedores por equipe e 9 cursos (Pedagogia em duas instituições; 1 curso inativo).
 
 ## Scripts
 
@@ -50,22 +62,15 @@ Ao todo: 1 admin, 4 supervisores com suas equipes (Alfa, Beta, Gama, Delta), 10 
 | `npm run build` / `npm start` | Build e servidor de produção |
 | `npm run lint` | ESLint |
 | `npm run typecheck` | TypeScript (`tsc --noEmit`) |
-| `npm test` | Testes (Vitest; cada arquivo usa um Postgres em memória) |
+| `npm test` | Testes (Vitest; cada arquivo usa um Postgres em memória com os SQLs de `database/migrations`) |
 | `npm run check` | lint + typecheck + testes |
-| `npm run db:generate` | Gera uma migration SQL a partir de mudanças no schema (`src/server/db/schema`) |
-| `npm run db:migrate` | Aplica as migrations pendentes |
-| `npm run db:seed` | Cria os dados fictícios: cada bloco (organização, cursos) só roda se a tabela estiver vazia; bloqueado em produção |
-| `npm run db:reset` | Apaga o banco de desenvolvimento e reaplica as migrations (bloqueado em produção) |
+| `npm run db:migrate` | Aplica os SQLs de `database/migrations` no **PGlite local**. Recusa Supabase |
+| `npm run db:seed` | Cria dados fictícios; cada bloco (organização, cursos) só roda se a tabela estiver vazia. Contra o Supabase exige `-- --allow-remote` |
+| `npm run db:reset` | Apaga e recria o **PGlite local**. Recusa Supabase |
 
-## Usando PostgreSQL real (produção)
+## Produção
 
-Defina no `.env` (ou nas variáveis do ambiente de deploy):
-
-```
-DATABASE_URL=postgresql://usuario:senha@host:5432/crm_polo
-```
-
-Depois rode `npm run db:migrate` e `npm run build && npm start`. Funciona em qualquer host Node.js com Postgres gerenciado (Neon, Supabase, RDS, Railway, Render…).
+Use a mesma `DATABASE_URL` do Supabase (com os SQLs executados) e rode `npm run build && npm start` em qualquer host Node.js.
 Com mais de uma instância, defina também `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` com o mesmo valor em todas elas.
 
 ## Segurança: o que já está garantido
@@ -74,7 +79,8 @@ Com mais de uma instância, defina também `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` 
 - Permissões aplicadas nos **serviços** (`src/server/modules`), nunca apenas na interface. Server Actions chamadas diretamente, sem a tela, também são bloqueadas.
 - Acesso fora do escopo (outro vendedor, outra equipe, ID alterado) retorna **404**, sem revelar que o registro existe.
 - Entradas validadas com schemas estritos: campos extras como `role` ou `teamId` são rejeitados (mass assignment).
-- Custo da bolsa em tabela separada, devolvido só por funções exclusivas do admin; vendedor e supervisor recebem apenas `{ id, name }` dos cursos ativos.
-- No banco: e-mail único, um supervisor por equipe, papel imutável, auditoria append-only e cursos sem exclusão física (triggers).
+- Custo da bolsa em tabela separada, devolvido só por funções exclusivas do admin; vendedor e supervisor recebem apenas `{ id, name, institutionName }` dos cursos ativos.
+- No banco: e-mail único, um supervisor por equipe, papel imutável, auditoria append-only, curso + instituição únicos e cursos sem exclusão física (triggers).
+- Supabase: RLS ligado em todas as tabelas e nenhum acesso para `anon`/`authenticated`. A API REST pública do Supabase não expõe nenhum dado.
 
-Os testes em [`tests/`](tests) cobrem esses pontos, incluindo "vendedor não acessa recursos de outro vendedor" e "supervisor não acessa outra equipe".
+Os testes em [`tests/`](tests) cobrem esses pontos, incluindo "vendedor não acessa recursos de outro vendedor", "supervisor não acessa outra equipe" e "o schema do código bate com o banco".

@@ -11,9 +11,9 @@
 |---|---|---|
 | Linguagem | **TypeScript** (strict) | Tipagem ponta a ponta, do schema do banco até a tela. |
 | Framework | **Next.js 16 (App Router)**, monólito | UI e backend no mesmo deploy, sem API separada para manter. Server Components leem dados no servidor; Server Actions fazem mutações. |
-| Banco | **PostgreSQL** | Relacional, transações, índices únicos/parciais, CHECK, triggers — essenciais para unicidade de telefone e consistência financeira. |
-| ORM / migrations | **Drizzle ORM + drizzle-kit** | SQL explícito e tipado, migrations em arquivos `.sql` versionados e revisáveis, sem engine binária. |
-| Banco em dev/testes | **PGlite** (Postgres compilado para WASM) | Roda o **mesmo Postgres** sem Docker nem instalação. Testes usam uma instância em memória por arquivo. Produção usa Postgres real só trocando `DATABASE_URL`. |
+| Banco | **PostgreSQL no Supabase** (só como Postgres hospedado; sem Supabase Auth) | Relacional, transações, índices únicos/parciais, CHECK, triggers — essenciais para unicidade de telefone e consistência financeira. |
+| ORM / migrations | **Drizzle ORM** + SQLs manuais em `database/migrations` | Drizzle só para consultas tipadas. O schema é alterado por SQLs versionados, executados manualmente no SQL Editor do Supabase ([database/README.md](../database/README.md)). |
+| Banco de testes | **PGlite** (Postgres compilado para WASM) | Cada arquivo de teste sobe um Postgres em memória e aplica **os mesmos SQLs** executados no Supabase. Um teste confere que o schema Drizzle bate com o banco. |
 | Autenticação | **Própria, com sessão no banco** | Token aleatório em cookie `httpOnly`; banco guarda só o SHA-256. Senha com `scrypt` nativo do Node. Sem dependência de bibliotecas beta; fácil de auditar. Revogação imediata (desativar usuário derruba as sessões). |
 | Validação | **Zod 4** (`z.strictObject`) | Rejeita campos não previstos → proteção contra mass assignment. |
 | UI | **Tailwind CSS 4** + componentes próprios + **lucide-react** | Visual consistente com a cor #082B59, sem kit pesado. Gráficos (fase de dashboards): Recharts. |
@@ -41,7 +41,7 @@ src/server/modules/** ... SERVIÇOS DE DOMÍNIO — a fronteira de segurança:
    │                      3) Validação estrita (Zod)
    │                      4) Transação + auditoria na mesma transação
    ▼
-src/server/db/** ........ Schema Drizzle, conexão, migrations (drizzle/)
+src/server/db/** ........ Schema Drizzle (espelha database/migrations), conexão
    ▼
 PostgreSQL .............. Constraints, índices únicos e triggers como defesa em profundidade
 ```
@@ -69,7 +69,7 @@ Valores monetários sempre em **centavos (integer)**. Datas em `timestamptz` (UT
 | `teams` | Equipe comercial, `supervisor_id` | nome único (sem diferenciar maiúsculas); um supervisor lidera no máximo uma equipe; `supervisor_id` precisa ser `SUPERVISOR` (trigger) |
 | `sessions` | Sessões de login | id = SHA-256 do token; cascade ao remover usuário |
 | `audit_events` | Log central de auditoria | **append-only** (trigger bloqueia UPDATE/DELETE) |
-| `courses` *(Fase 1)* | Curso: nome, ativo/inativo, timestamps | nome único (sem diferenciar maiúsculas); **sem coluna de custo**; DELETE bloqueado por trigger |
+| `courses` *(Fase 1)* | Curso: nome, **instituição** (`institution_name`), ativo/inativo, timestamps | par curso + instituição único (sem diferenciar maiúsculas/espaços); nome e instituição não vazios; **sem coluna de custo**; DELETE bloqueado por trigger |
 | `course_costs` *(Fase 1)* | Custo da bolsa em centavos (1:1 com o curso), `updated_at`, `updated_by` | `cost_cents >= 0`; DELETE bloqueado por trigger |
 
 Relação **Empresa → Supervisor → Vendedores**: empresa única (implícita); `teams.supervisor_id` (1:1) e `users.team_id` (N:1).
@@ -103,7 +103,7 @@ Decisão do cliente: quando o vendedor muda de equipe, **seus leads em aberto o 
 
 | Função do serviço | Quem pode | O que retorna |
 |---|---|---|
-| `listActiveCourseOptions` | ADMIN, SUPERVISOR, SELLER (`courses:list`) | Somente `{ id, name }` de cursos **ativos**. É a lista que leads e vendas vão usar |
+| `listActiveCourseOptions` | ADMIN, SUPERVISOR, SELLER (`courses:list`) | Somente `{ id, name, institutionName }` de cursos **ativos**. É a lista que leads e vendas vão usar |
 | `listCoursesWithCost` / `getCourseWithCost` | ADMIN (`courses:viewCost`) | Ativos e inativos, com `scholarshipCostCents` |
 | `createCourse` / `updateCourse` / `setCourseActive` | ADMIN (`courses:manage`) | Criação e edição de nome e custo; ativação/desativação. Sem exclusão |
 
@@ -169,7 +169,8 @@ src/
     modules/<domínio>/       # Serviços: users, teams, audit (+ leads, sales... nas fases)
     next/                    # Ponte Next.js ↔ serviços (sessão, runAction, orNotFound)
   proxy.ts                   # Redirect otimista para /login
-drizzle/                     # Migrations SQL versionadas
+database/migrations/         # SQLs executados manualmente no Supabase (fonte do schema)
+drizzle/                     # Histórico das migrations anteriores (não aplicado)
 scripts/                     # migrate, seed, reset
 tests/                       # Vitest (authz, auth, módulos, banco)
 ```
@@ -207,6 +208,14 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 | C4 | **Vendedor que muda de equipe leva os leads em aberto**; vendas e eventos passados ficam com a equipe da época | §3 "Equipe da época × equipe atual"; auditoria da troca com retrato de origem e destino (implementado) |
 | C5 | **Supervisor não tem carteira comercial.** Só o SELLER tem leads, vendas, follow-ups, negociações e comissões | `leads:create` e `sales:create` = `SELLER`; na fase Leads, um trigger garante que `leads.owner_id` seja sempre um SELLER |
 | C6 | **Parcelas**: só a estrutura (número, valor, vencimento, status, data de pagamento). Regras de geração ficam para a fase financeira | §3 |
+| C7 | **ADMIN opera leads globalmente**: transfere, redistribui, manda para a Lixeira, recupera e escolhe o novo vendedor. A restrição de estorno (C1) vale só para Vendas | `leads:transfer/redistribute/trash/restore` incluem ADMIN |
+| C8 | **Telefone**: só números brasileiros, DDD obrigatório, celular com 9º dígito. Qualquer formato de entrada vira um telefone canônico único (`(79) 99999-9999` = `+55 79 99999-9999`), com unicidade garantida no PostgreSQL | Fase Leads: normalização no backend + `UNIQUE` no banco |
+| C9 | **Duplicado ativo**: bloquear e informar só que já existe, o nome do responsável e a equipe. Nada de histórico, observações ou outros dados | Fase Leads |
+| C10 | **Duplicado na Lixeira**: bloquear; o lead é o MESMO registro. Mensagem: "Este lead já está cadastrado e encontra-se na Lixeira. Solicite ao supervisor ou administrador a recuperação." | Fase Leads |
+| C11 | **Transferência**: SUPERVISOR só entre vendedores da própria equipe; ADMIN entre quaisquer equipes/vendedores. Tudo com histórico | Fase Leads |
+| C12 | **Vendedor desativado** com leads abertos: nada é redistribuído automaticamente; os leads vão para a fila de redistribuição do supervisor. Histórico guarda vendedor anterior, equipe, supervisor, momento da desativação e o novo responsável. Mudança de equipe (sem desativação): os leads acompanham o vendedor (C4) | Fase Leads |
+| C13 | **Curso por instituição**: o mesmo curso pode existir em instituições diferentes, com custos diferentes; unicidade = curso + instituição (`institution_name`, texto) | ✅ `courses.institution_name` + `courses_name_institution_unique` |
+| C14 | **Banco oficial: Supabase** (só Postgres, sem Supabase Auth). Schema alterado apenas por SQLs manuais em `database/migrations` | [database/README.md](../database/README.md) |
 
 ### Decisões técnicas
 
@@ -219,11 +228,10 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 
 ## 9. Dúvidas em aberto
 
-Resolvidas pelo cliente: estorno (C1), prazo de 1 dia (C2), retrabalho (C3), troca de equipe (C4), supervisor sem carteira (C5) e parcelas (C6, adiada para a fase financeira). Pendentes:
+Resolvidas pelo cliente: C1–C14 (§8). As linhas abaixo mantêm a numeração original; as resolvidas foram removidas. Pendentes:
 
 | # | Dúvida | Contexto | Padrão atual | Fase |
 |---|---|---|---|---|
-| 1 | O **admin executa os fluxos operacionais de leads** (transferir, redistribuir, lixeira, recuperar)? | §4.1 e §4.4 dizem que sim; a decisão C1 diz que visão global ≠ operação | Matriz permite ao admin (conforme §4.1/§4.4); confirmar | Leads |
 | 2 | Vendedor pode **transferir lead**? | §4.4: "Não confirmado" | Negado | Leads |
 | 3 | Vendedor pode **exportar relatórios** (só os próprios dados)? | §4.4: "Não confirmado" | Negado | Relatórios |
 | 4 | **Depois da venda**: o lead fica em Fechamento? Pode comprar de novo depois? Se a venda for **estornada**, volta para qual etapa? | Não definido | — | Vendas/Estorno |
@@ -234,11 +242,5 @@ Resolvidas pelo cliente: estorno (C1), prazo de 1 dia (C2), retrabalho (C3), tro
 | 9 | **FU3 vencido**: o lead continua com o mesmo responsável (só some da fila dele) até o supervisor decidir? | §7 | Proposta: mantém o responsável, marcado como "aguardando supervisor" | Kanban |
 | 10 | Campos adicionais do lead (e-mail, CPF, cidade)? | §26 | Só os campos mínimos | Leads |
 | 11 | Formato e colunas de cada relatório | §26 | — | Relatórios |
-| 12 | **Telefone**: só números brasileiros? DDD obrigatório? O 9º dígito do celular é obrigatório (para não tratar `11 9xxxx-xxxx` e `11 xxxx-xxxx` como leads diferentes)? | §5.2 só diz "normalizado" | Proposta: só BR, DDD obrigatório, armazenado como `+55DDDNÚMERO` | Leads |
-| 13 | **Telefone duplicado de lead na Lixeira**: bloquear e informar "lead na lixeira, peça ao supervisor para recuperar"? | §5.2 não trata a Lixeira | Proposta: bloquear, informando a situação e a equipe responsável | Leads |
-| 14 | **O que a mensagem de duplicidade mostra** a um vendedor de outra equipe: nome do responsável, equipe, etapa? | §5.2: "informação suficiente para identificar quem está responsável" | Proposta: nome do vendedor e equipe; nada sobre o lead além disso | Leads |
-| 15 | **Supervisor transfere lead para vendedor de outra equipe?** | §4.2 | Proposta: supervisor só dentro da própria equipe; admin entre equipes | Leads |
 | 16 | **Curso de interesse** no cadastro: obrigatório? Um ou vários? | §5.1: "quando aplicável" | Proposta: opcional, vários, só cursos ativos | Leads |
 | 17 | **Data de cadastro do lead**: sempre a hora do servidor, ou o vendedor pode informar uma data retroativa? | §5.1 | Proposta: hora do servidor, imutável | Leads |
-| 18 | **Vendedor desativado** com leads em aberto: os leads vão para a fila do supervisor para redistribuição? | Não definido | Proposta: sim, aparecem como "aguardando redistribuição" | Leads |
-| 19 | **Instituição do curso**: o mesmo curso em instituições diferentes (com custos diferentes) é um curso por instituição, ou falta um campo "instituição"? | §10: custo "inclusive em função do curso/instituição" | Hoje: nome único; diferenciar pelo nome (ex.: "Pedagogia — Instituição X") | Leads/Vendas |

@@ -37,7 +37,7 @@ function form(fields: Record<string, string>): FormData {
 beforeAll(async () => {
   handle = await createTestDatabase();
   org = await seedOrganization(handle);
-  courseId = (await createCourse(await org.ctx(org.ids.admin), { name: "Administração", scholarshipCostCents: 432_10 })).id;
+  courseId = (await createCourse(await org.ctx(org.ids.admin), { name: "Administração", institutionName: "Faculdade Alpha", scholarshipCostCents: 432_10 })).id;
 });
 afterAll(() => handle.close());
 
@@ -46,14 +46,14 @@ describe("Server Actions de cursos chamadas diretamente", () => {
     it(`${who}: recebe erro de permissão sem nenhum dado do curso ou custo`, async () => {
       session.current = await org.ctx(org.ids[who]);
       const results = [
-        await createCourseAction(IDLE, form({ name: "Invasão", scholarshipCost: "1,00" })),
-        await updateCourseAction(IDLE, form({ courseId, name: "Invasão", scholarshipCost: "1,00" })),
+        await createCourseAction(IDLE, form({ name: "Invasão", institutionName: "X Y", scholarshipCost: "1,00" })),
+        await updateCourseAction(IDLE, form({ courseId, name: "Invasão", institutionName: "X Y", scholarshipCost: "1,00" })),
         await setCourseActiveAction(IDLE, form({ courseId, active: "false" })),
       ];
       for (const result of results) {
         expect(result).toMatchObject({ status: "error", message: "Você não tem permissão para executar esta ação." });
         const payload = JSON.stringify(result);
-        expect(payload).not.toMatch(/43210|432,10|Administração|cost/i);
+        expect(payload).not.toMatch(/43210|432,10|Administração|Faculdade Alpha|cost/i);
       }
     });
   }
@@ -68,7 +68,7 @@ describe("Server Actions de cursos chamadas diretamente", () => {
 
   it("admin: cria e altera custo em reais, convertido para centavos", async () => {
     session.current = await org.ctx(org.ids.admin);
-    const created = await createCourseAction(IDLE, form({ name: "Direito", scholarshipCost: "1.234,56" }));
+    const created = await createCourseAction(IDLE, form({ name: "Direito", institutionName: "Universidade Gama", scholarshipCost: "1.234,56" }));
     expect(created).toMatchObject({ status: "success" });
     const [row] = await handle.db
       .select({ cost: courseCosts.costCents })
@@ -80,7 +80,7 @@ describe("Server Actions de cursos chamadas diretamente", () => {
 
   it("admin: custo inválido aponta erro no campo", async () => {
     session.current = await org.ctx(org.ids.admin);
-    const result = await createCourseAction(IDLE, form({ name: "Medicina", scholarshipCost: "abc" }));
+    const result = await createCourseAction(IDLE, form({ name: "Medicina", institutionName: "Universidade Gama", scholarshipCost: "abc" }));
     expect(result).toMatchObject({ status: "error", fieldErrors: { scholarshipCostCents: ["Informe um custo válido (ex.: 300,00)."] } });
   });
 });

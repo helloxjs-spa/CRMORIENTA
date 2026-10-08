@@ -16,7 +16,11 @@ function costField(formData: FormData): number | undefined {
 
 export async function createCourseAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   return runAction(async (ctx) => {
-    await createCourse(ctx, { name: text(formData, "name"), scholarshipCostCents: costField(formData) });
+    await createCourse(ctx, {
+      name: text(formData, "name"),
+      institutionName: text(formData, "institutionName"),
+      scholarshipCostCents: costField(formData),
+    });
     revalidatePath("/cursos");
     return "Curso criado com sucesso.";
   });
@@ -26,6 +30,7 @@ export async function updateCourseAction(_prev: ActionState, formData: FormData)
   return runAction(async (ctx) => {
     await updateCourse(ctx, text(formData, "courseId"), {
       name: text(formData, "name"),
+      institutionName: text(formData, "institutionName"),
       scholarshipCostCents: costField(formData),
     });
     revalidatePath("/cursos");
