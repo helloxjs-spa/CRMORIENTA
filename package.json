@@ -13,6 +13,7 @@
     "db:migrate": "tsx scripts/migrate.mts",
     "db:seed": "tsx scripts/seed.mts",
     "db:reset": "tsx scripts/reset.mts",
+    "admin:create": "tsx scripts/admin-create.mts",
     "setup": "npm run db:migrate && npm run db:seed",
     "check": "npm run lint && npm run typecheck && npm test"
   },

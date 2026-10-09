@@ -224,6 +224,7 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 - **Login**: mensagem genérica, tempo constante para e-mail inexistente, limite de 10 tentativas a cada 15 min por e-mail+IP (em memória; com múltiplas instâncias, mover para o Postgres).
 - **Papel do usuário é imutável** depois de criado (trigger). Trocar papel tem efeitos em equipes, leads e vendas que ainda não foram definidos.
 - **Desativar supervisor** exige antes definir outro supervisor para a equipe que ele lidera. **Inativar equipe** exige que ela não tenha vendedores ativos.
+- **Primeiro administrador**: `npm run admin:create` (interativo, senha sem eco, nunca por argumento/arquivo/pipe). Usa o mesmo `hashPassword` e as mesmas validações da aplicação; recusa se já existir ADMIN ou se o e-mail já existir. O usuário e o evento `auth.admin_bootstrapped` (`actor_id = NULL`, metadata `{ source: "admin:create" }`) são gravados na mesma transação, sob um advisory lock contra execuções simultâneas.
 - **Acesso negado em páginas** responde **404** (não revela existência). Não há `loading.tsx` envolvendo páginas com checagem de acesso, para que o status HTTP seja real.
 
 ## 9. Dúvidas em aberto

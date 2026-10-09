@@ -36,7 +36,13 @@ npm run dev               # http://localhost:3000
 
 **Connection string:** no painel do Supabase, use **Connect › Session pooler** (porta 5432) ou a conexão direta, e acrescente `?sslmode=require`. Nunca faça commit do `.env`.
 
-**Primeiro acesso:** o banco começa vazio. O primeiro administrador precisa ser criado antes do login (procedimento definido na próxima etapa).
+**Primeiro acesso:** o banco começa vazio. Crie o primeiro administrador com:
+
+```bash
+npm run admin:create
+```
+
+O comando pede nome, e-mail, senha e confirmação. A senha não aparece na tela e nunca é aceita por argumento, arquivo ou pipe. Antes de gravar, mostra o tipo de banco de destino (sem credenciais) e pede confirmação. Ele só funciona enquanto **não existir nenhum ADMIN**; depois disso, novos usuários são criados pela tela **Usuários**.
 
 ### Banco local opcional (sem Supabase)
 
@@ -67,6 +73,7 @@ Ao todo: 1 admin, 4 supervisores com suas equipes (Alfa, Beta, Gama, Delta), 10 
 | `npm run db:migrate` | Aplica os SQLs de `database/migrations` no **PGlite local**. Recusa Supabase |
 | `npm run db:seed` | Cria dados fictícios; cada bloco (organização, cursos) só roda se a tabela estiver vazia. Contra o Supabase exige `-- --allow-remote` |
 | `npm run db:reset` | Apaga e recria o **PGlite local**. Recusa Supabase |
+| `npm run admin:create` | Cria o **primeiro** administrador no banco da `DATABASE_URL` (interativo; recusa se já houver ADMIN) |
 
 ## Produção
 

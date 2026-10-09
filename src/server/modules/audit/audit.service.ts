@@ -10,6 +10,7 @@ export const AUDIT_ACTIONS = {
   "auth.login_failed": "Falha de login",
   "auth.logout": "Logout",
   "auth.password_changed": "Senha alterada pelo próprio usuário",
+  "auth.admin_bootstrapped": "Primeiro administrador criado (bootstrap)",
   "user.created": "Usuário criado",
   "user.updated": "Usuário atualizado",
   "user.activated": "Usuário reativado",
