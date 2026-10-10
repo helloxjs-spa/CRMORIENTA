@@ -6,11 +6,12 @@ CRM web para a operação comercial de um polo educacional: equipes, vendedores,
 - **Arquitetura, modelo de dados, fases e dúvidas em aberto:** [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md)
 - **Banco de dados (Supabase) e fluxo de alterações:** [`database/README.md`](database/README.md)
 
-**Status:** Fases 0 (Fundação), 1 (Cursos) e 2 (Leads) concluídas. Próxima: Kanban.
+**Status:** Fases 0 (Fundação), 1 (Cursos), 2 (Leads), 3 (Kanban + Follow-up) e 4 (Negociação) concluídas. Próxima: Vendas.
 
 - **Fundação:** autenticação, perfis (Administrador, Supervisor, Vendedor), equipes, autorização no backend (RBAC + ownership + escopo de equipe), auditoria e layout autenticado.
 - **Cursos:** curso + instituição, com custo da bolsa visível e editável só pelo administrador; lista de cursos ativos (curso e instituição, sem custo) para os demais perfis.
 - **Leads:** tela `/leads` com busca, filtros, paginação, drawer com histórico e fila de decisão do supervisor; cadastro com telefone brasileiro canônico e único (inclusive na Lixeira), carteira por vendedor, transferência, fila do supervisor (vendedor desativado e Follow-up 3 vencido), redistribuição com ciclos de Retrabalho, Lixeira e recuperação, observações e linha do tempo.
+- **Kanban:** quadro `/kanban` com transições validadas no backend, prazos de 24 h, Follow-up 3 vencido aguardando o supervisor e bloqueio do vendedor com negociação vencida.
 
 Os módulos comerciais seguintes aparecem no menu como "em breve".
 

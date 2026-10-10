@@ -26,7 +26,7 @@ export type NavSection = { title?: string; items: NavItem[] };
 export function navigationFor(actor: Actor): NavSection[] {
   const commercial: NavItem[] = [
     { label: "Leads", href: "/leads", icon: "leads" },
-    { label: "Kanban", href: "/kanban", icon: "kanban", soon: true },
+    { label: "Kanban", href: "/kanban", icon: "kanban" },
     { label: "Vendas", href: "/vendas", icon: "sales", soon: true },
     { label: "Parcelas", href: "/parcelas", icon: "installments", soon: true },
     { label: "Ranking", href: "/ranking", icon: "ranking", soon: true },

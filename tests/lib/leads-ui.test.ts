@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { leadActionsFor } from "@/app/(app)/leads/policy";
+import { leadActionsFor, moveTargetsFor } from "@/app/(app)/leads/policy";
 import { leadsHref, parseLeadsParams, toListFilters } from "@/app/(app)/leads/search-params";
 import type { Actor } from "@/server/authz/actor";
 import { formatRelativeDateTime } from "@/lib/format";
@@ -165,25 +165,41 @@ describe("URL da tela de Leads", () => {
 describe("ações oferecidas pela interface (o backend revalida tudo)", () => {
   const seller: Pick<Actor, "role" | "userId"> = { role: "SELLER", userId: "a1" };
   const supervisor: Pick<Actor, "role" | "userId"> = { role: "SUPERVISOR", userId: "s1" };
-  const lead = { status: "ACTIVE" as const, stage: "FOLLOW_UP_1" as const, ownerId: "a1", queueReason: null };
+  const free = { negotiationBlocked: false };
+  const blocked = { negotiationBlocked: true };
+  const future = new Date(Date.now() + 3_600_000);
+  const past = new Date(Date.now() - 3_600_000);
+  const lead = { status: "ACTIVE" as const, stage: "FOLLOW_UP_1" as const, ownerId: "a1", queueReason: null, stageDueAt: future };
 
-  it("vendedor responsável: editar e registrar atualização; nada administrativo", () => {
-    expect(leadActionsFor(lead, seller)).toEqual(["edit", "note"]);
+  it("vendedor responsável: editar, registrar atualização e mover para os destinos do mapa", () => {
+    expect(leadActionsFor(lead, seller, free)).toEqual(["edit", "note", "move"]);
+    expect(moveTargetsFor(lead, seller, free)).toEqual(["FOLLOW_UP_2", "NEGOTIATION"]);
+    expect(moveTargetsFor({ ...lead, ownerId: "a2" }, seller, free)).toEqual([]);
+    expect(moveTargetsFor(lead, supervisor, free)).toEqual([]);
   });
 
-  it("Follow-up 3 vencido: vendedor sem ação administrativa; supervisor redistribui ou envia para a Lixeira", () => {
-    const expired = { ...lead, stage: "FOLLOW_UP_3" as const, queueReason: "FOLLOW_UP_3_EXPIRED" as const };
-    expect(leadActionsFor(expired, seller)).toEqual(["edit", "note"]);
+  it("Follow-up 3 vencido: somente leitura para o vendedor; supervisor redistribui ou envia para a Lixeira", () => {
+    const expired = { ...lead, stage: "FOLLOW_UP_3" as const, queueReason: "FOLLOW_UP_3_EXPIRED" as const, stageDueAt: past };
+    expect(leadActionsFor(expired, seller, free)).toEqual([]);
+    expect(moveTargetsFor(expired, seller, free)).toEqual([]);
     expect(leadActionsFor(expired, supervisor)).toEqual(["edit", "redistribute", "trash"]);
+  });
+
+  it("negociação vencida: só a própria negociação continua movimentável", () => {
+    expect(moveTargetsFor(lead, seller, blocked)).toEqual([]);
+    const overdue = { ...lead, stage: "NEGOTIATION" as const, stageDueAt: past };
+    expect(moveTargetsFor(overdue, seller, blocked)).toEqual(["FOLLOW_UP_1"]);
+    expect(leadActionsFor(lead, seller, blocked)).toEqual(["edit", "note"]);
   });
 
   it("sem responsável: transferir ou Lixeira (não é Retrabalho)", () => {
     expect(leadActionsFor({ ...lead, ownerId: null, queueReason: "UNASSIGNED" }, supervisor)).toEqual(["edit", "transfer", "trash"]);
   });
 
-  it("Lixeira: só recuperar; Fechamento: nem transferir nem Lixeira", () => {
+  it("Lixeira: só recuperar; Fechamento: nem transferir, nem Lixeira, nem mover", () => {
     expect(leadActionsFor({ ...lead, status: "TRASHED" }, supervisor)).toEqual(["restore"]);
     expect(leadActionsFor({ ...lead, status: "TRASHED" }, seller)).toEqual([]);
     expect(leadActionsFor({ ...lead, stage: "CLOSED" }, supervisor)).toEqual(["edit"]);
+    expect(moveTargetsFor({ ...lead, stage: "CLOSED" }, seller, free)).toEqual([]);
   });
 });

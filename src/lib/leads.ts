@@ -40,6 +40,32 @@ export const QUEUE_REASON_LABELS: Record<LeadQueueReason, string> = {
   FOLLOW_UP_3_EXPIRED: "Follow-up 3 vencido",
 };
 
+/**
+ * Máquina de estados do Kanban: destinos permitidos para a movimentação
+ * MANUAL do vendedor. O serviço moveLeadStage valida contra esta tabela.
+ * - Não há volta arbitrária (ex.: FU3 → FU2).
+ * - REWORK só surge por redistribuição ou recuperação da Lixeira.
+ * - CLOSED só surge com uma venda (fase Vendas).
+ * - FOLLOW_UP_3 → NEGOTIATION só enquanto o FU3 não venceu (checado no serviço).
+ */
+export const STAGE_TRANSITIONS: Record<LeadStage, readonly LeadStage[]> = {
+  NEW: ["NO_ANSWER", "NEGOTIATION"],
+  NO_ANSWER: ["FOLLOW_UP_1", "NEGOTIATION"],
+  FOLLOW_UP_1: ["FOLLOW_UP_2", "NEGOTIATION"],
+  FOLLOW_UP_2: ["FOLLOW_UP_3", "NEGOTIATION"],
+  FOLLOW_UP_3: ["NEGOTIATION"],
+  NEGOTIATION: ["FOLLOW_UP_1"],
+  REWORK: ["FOLLOW_UP_1"],
+  CLOSED: [],
+};
+
+/** Etapas com prazo (24 h corridas a partir da entrada). As demais não têm prazo. */
+export const STAGES_WITH_DEADLINE: readonly LeadStage[] = ["FOLLOW_UP_1", "FOLLOW_UP_2", "FOLLOW_UP_3", "NEGOTIATION"];
+
+export function canTransition(from: LeadStage, to: LeadStage): boolean {
+  return STAGE_TRANSITIONS[from].includes(to);
+}
+
 /** Curso + instituição: diferencia a mesma graduação em faculdades diferentes. */
 export function courseLabel(course: { name: string; institutionName: string }): string {
   return `${course.name} — ${course.institutionName}`;

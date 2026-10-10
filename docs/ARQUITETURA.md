@@ -126,6 +126,8 @@ Serviços em [`src/server/modules/leads/leads.service.ts`](../src/server/modules
 | `redistributeLead` | SUPERVISOR, ADMIN | Só com **Follow-up 3 vencido**: encerra o ciclo (`REDISTRIBUTED`), abre ciclo `REWORK` para o vendedor escolhido, etapa `REWORK`, sem prazo |
 | `trashLead` | SUPERVISOR, ADMIN | Lixeira: encerra o ciclo (`TRASHED`), preserva etapa, responsável (ou ausência dele) e telefone |
 | `restoreLead` | SUPERVISOR (própria equipe), ADMIN | Recupera para o vendedor escolhido: novo ciclo `REWORK`, etapa `REWORK` |
+| `moveLeadStage` | SELLER responsável (`leads:move`) + escopo | Muda a etapa conforme a máquina de estados (§4), com prazo e evento `STAGE_CHANGED` na mesma transação. Recusa: transição fora do mapa, Fechamento, Retrabalho, Follow-up 3 vencido e negociação vencida em outro lead |
+| `getNegotiationBlock` | todos (`leads:view`) | Negociações vencidas do vendedor logado (contagem e leads), para o aviso persistente; `null` para quem não tem carteira |
 | `countDecisionQueue` + `listLeads({ queue })` | SUPERVISOR (própria equipe), ADMIN (`leads:transfer`) | Fila de decisão: leads sem responsável (`UNASSIGNED`) e com Follow-up 3 vencido (`FOLLOW_UP_3_EXPIRED`), calculada por `stage_due_at`, sem job |
 | `listLeadSellers` | SUPERVISOR (própria equipe), ADMIN | Vendedores no escopo, para filtros e para escolher o destino de transferência, redistribuição e recuperação |
 | `listCourseFilterOptions` (cursos) | todos (`courses:list`) | Cursos ativos e inativos, **sem custo**, para filtrar leads antigos |
@@ -168,7 +170,26 @@ FU3 vencido -> volta para o Supervisor -> Lixeira (status = TRASHED)
 - **Lixeira** é status, não etapa: encerra o ciclo (`TRASHED`) e preserva a etapa, o responsável (ou a ausência dele, se veio da fila) e o telefone. A recuperação abre um ciclo `REWORK` e coloca o lead em `REWORK` para o vendedor escolhido.
 - **Transferência × redistribuição:** transferir troca só o responsável (mesma etapa, prazo e ciclo); redistribuir é nova tentativa comercial (novo ciclo `REWORK`, etapa `REWORK`).
 - **Fechamento** só é alcançado criando uma venda, na mesma transação. Não pode ser movido "à mão".
-- **Bloqueio por negociação vencida**: um guard de backend (`assertSellerNotBlocked`) roda antes das mutações de lead do vendedor e verifica, via SQL, se existe `stage = NEGOTIATION AND stage_due_at < agora` para ele.
+**Máquina de estados (decisão C32)** — `STAGE_TRANSITIONS` em [`src/lib/leads.ts`](../src/lib/leads.ts), validada por `moveLeadStage`:
+
+| De | Para |
+|---|---|
+| Lead cadastrado | Não respondeu · Em negociação |
+| Não respondeu | Follow-up 1 · Em negociação |
+| Follow-up 1 | Follow-up 2 · Em negociação |
+| Follow-up 2 | Follow-up 3 · Em negociação |
+| Follow-up 3 | Em negociação (só se o FU3 **não** venceu) |
+| Em negociação | Follow-up 1 |
+| Retrabalho | Follow-up 1 |
+| Fechamento | — (só com a venda, fase Vendas) |
+
+- Sem volta arbitrária (FU3 → FU2, FU2 → FU1 etc. são recusados). Retrabalho nunca é destino manual: surge da redistribuição ou da recuperação da Lixeira. Fechamento nunca é destino manual.
+- **Prazos (C33):** ao entrar em Follow-up 1/2/3 ou Em negociação, `stage_entered_at = agora` e `stage_due_at = agora + 24 h`; nas demais etapas, `stage_due_at = NULL`. Observação em Negociação: `stage_due_at = agora + 24 h`, sem mexer em `stage_entered_at`.
+- **Follow-up 3 vencido (C27/C35):** somente leitura para o SELLER (não movimenta, não edita, não registra atualização; continua vendo dados, histórico e prazo). SUPERVISOR/ADMIN decidem: Redistribuir ou Lixeira.
+- **Bloqueio por negociação vencida (C34):** se o SELLER tem alguma negociação ativa com `stage_due_at < agora`, `createLead` e `moveLeadStage` de **outros** leads respondem `NegotiationOverdueError` ("Você possui uma negociação vencida. Atualize-a…"). Login, consulta, drawer e histórico continuam liberados; a própria negociação vencida pode ser atualizada (o que renova o prazo) ou movimentada. O bloqueio some quando não há mais nenhuma vencida. Consulta pelo índice parcial `leads_negotiation_due_idx`.
+- **Quem movimenta (decisão técnica, derivada de C5; confirmar na dúvida 26):** só o SELLER responsável (`leads:move`), pela regra C5 (só o vendedor tem carteira e follow-ups). SUPERVISOR e ADMIN acompanham o quadro e usam as ações administrativas.
+
+**Tela `/kanban`:** colunas Lead cadastrado → Retrabalho; Fechamento aparece bloqueada ("indisponível até a fase de Vendas"); Lixeira continua na tela de Leads. Cada coluna consulta o banco com `listLeads` (escopo + filtros, prazo mais próximo primeiro) e mostra até 50 cards, com o total no cabeçalho e o link "ver todos na lista" quando há mais. Arrastar só realça e aceita os destinos permitidos (calculados no servidor); a mudança aparece na hora e, se a action recusar, o card volta e a mensagem de negócio aparece. Cada card tem também o menu "Mover para" (teclado e celular, onde o arrastar não funciona). O drawer é o mesmo da lista, com os botões "Mover para". O vendedor bloqueado vê o aviso persistente com a quantidade de negociações vencidas e o atalho para a mais antiga (na lista e no Kanban).
 
 ## 5. Estratégia de auditoria: combinação
 
@@ -213,8 +234,8 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 | **0. Fundação** ✅ | Projeto, banco, migrations, auth, papéis, equipes, RBAC/escopo, auditoria, layout | §3, §4, §25 |
 | **1. Cursos** ✅ | Cadastro de cursos, `course_costs` restrito ao admin, lista operacional sem custo | §10, §13 |
 | **2. Leads** ✅ | Cadastro, edição, normalização e unicidade de telefone, transferência com histórico, `lead_events`/`lead_notes`, fila do supervisor, redistribuição, Lixeira e recuperação; tela operacional com busca, filtros, paginação, drawer e timeline | §5, §9, §19 |
-| 3. Kanban + Follow-up | Movimentação manual de etapas, prazos e vencidos no Kanban visual | §6, §7 |
-| 4. Negociação | Observações, vencimento, bloqueio do vendedor | §8 |
+| **3. Kanban + Follow-up** ✅ | Máquina de estados no backend, prazos, Follow-up 3 vencido somente leitura, quadro com arrastar validado | §6, §7 |
+| **4. Negociação** ✅ | Observações renovando o prazo, vencimento e bloqueio do vendedor | §8 |
 | 5. Retrabalho + Lixeira | ✅ entregue junto da fase 2 (serviços e telas) | §9 |
 | 6. Vendas | Venda + itens + comissão + custo/lucro (admin) | §11, §13, §14 |
 | 7. Pagamentos e parcelas | Pix/cartão, geração e baixa de parcelas | §12 |
@@ -262,6 +283,10 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 | C29 | **Data de cadastro** = `created_at` do banco; o SELLER não informa nem altera. Importação de leads antigos será um fluxo separado | `leads.created_at` |
 | C30 | **SELLER não transfere lead**; SUPERVISOR transfere na própria equipe e ADMIN entre equipes | `leads:transfer` |
 | C31 | **Listagem paginada no backend** (25 por padrão; 25, 50 ou 100), sem limite silencioso | `listLeads` |
+| C32 | **Transições do Kanban** conforme a tabela da §4; sem volta arbitrária; Retrabalho e Fechamento nunca são destinos manuais | `STAGE_TRANSITIONS`, `moveLeadStage` |
+| C33 | **Prazos**: entrada em FU1/FU2/FU3/Negociação = agora + 24 h; Lead cadastrado, Não respondeu e Retrabalho sem prazo; observação em Negociação renova para agora + 24 h sem mudar a entrada | `moveLeadStage`, `addLeadNote` |
+| C34 | **Negociação vencida** bloqueia o vendedor de cadastrar leads e de movimentar outros leads; consulta liberada; some quando todas são atualizadas | `NegotiationOverdueError` |
+| C35 | **Follow-up 3 vencido**: somente leitura para o vendedor (sem movimentar, editar ou registrar atualização) | `assertSellerMayChange` |
 
 ### Decisões técnicas
 
@@ -275,7 +300,7 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 
 ## 9. Dúvidas em aberto
 
-Resolvidas pelo cliente: C1–C31 (§8). As linhas abaixo mantêm a numeração original; as resolvidas foram removidas. Pendentes:
+Resolvidas pelo cliente: C1–C35 (§8). As linhas abaixo mantêm a numeração original; as resolvidas foram removidas. Pendentes:
 
 | # | Dúvida | Contexto | Padrão atual | Fase |
 |---|---|---|---|---|
@@ -284,7 +309,6 @@ Resolvidas pelo cliente: C1–C31 (§8). As linhas abaixo mantêm a numeração 
 | 5 | **Supervisor vê lucro/custo agregado do time?** | §17.2 × regra "não visualiza custos" | Custo e lucro só para admin | Dashboards |
 | 6 | **"Por curso/aluno"**: uma venda pode ter cursos de **alunos diferentes**? | §14 e RA-03 | Item = curso; aluno = lead da venda | Vendas |
 | 7 | **Custo de bolsa alterado**: vendas antigas mantêm o custo da época? | §26 | Proposta: sim (snapshot em `sale_items`) | Vendas |
-| 8 | **Negociação vencida bloqueia o quê exatamente?** | §8: "cadastrar novos leads ou movimentar outras frentes do Kanban" | Proposta: bloquear criação de lead e movimentação de outros leads; parcelas e certificados liberados | Negociação |
 | 11 | Formato e colunas de cada relatório | §26 | — | Relatórios |
-| 24 | Com o lead em **Follow-up 3 vencido** (aguardando o supervisor), o SELLER ainda pode **registrar atualização e editar os dados**? | C27 proíbe só a movimentação | Permitido (não é movimentação); só o destino (redistribuir/Lixeira) é do supervisor | Kanban |
-| 25 | **Transições de etapa permitidas** no Kanban (pode voltar etapa? pular de Lead cadastrado direto para Negociação? sair de Retrabalho só para Follow-up 1?) | §6/§7 só descrevem o fluxo | Não implementado (fase Kanban) | Kanban |
+| 26 | **SUPERVISOR ou ADMIN movimentam etapas** de um lead da equipe? | C5: só o vendedor tem carteira e follow-ups | Não (`leads:move` = SELLER) | Kanban |
+| 27 | **Negociação vencida** deveria bloquear também **parcelas e certificados** quando existirem? | C34 cita só cadastro e movimentação de leads | Não bloqueia | Vendas |

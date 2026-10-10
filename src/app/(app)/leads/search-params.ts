@@ -57,8 +57,10 @@ export function parseLeadsParams(raw: RawParams): LeadsParams {
   };
 }
 
-/** Monta a URL da tela, omitindo valores padrão. */
-export function leadsHref(params: LeadsParams, overrides: Partial<LeadsParams> = {}): string {
+export type LeadsBasePath = "/leads" | "/kanban";
+
+/** Monta a URL da tela (lista ou Kanban), omitindo valores padrão. */
+export function leadsHref(params: LeadsParams, overrides: Partial<LeadsParams> = {}, basePath: LeadsBasePath = "/leads"): string {
   const p = { ...params, ...overrides };
   const query = new URLSearchParams();
   if (p.view !== "carteira") query.set("visao", p.view);
@@ -72,7 +74,7 @@ export function leadsHref(params: LeadsParams, overrides: Partial<LeadsParams> =
   if (p.size !== LEAD_PAGE_SIZES[0]) query.set("por", String(p.size));
   if (p.lead) query.set("lead", p.lead);
   const text = query.toString();
-  return text ? `/leads?${text}` : "/leads";
+  return text ? `${basePath}?${text}` : basePath;
 }
 
 /** Filtros que mudam o conjunto de resultados (para saber se há filtro ativo). */

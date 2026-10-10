@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ServiceContext } from "@/server/context";
 import type { DatabaseHandle } from "@/server/db/connect";
 import { leadEvents, leads } from "@/server/db/schema";
-import { createLead, trashLead } from "@/server/modules/leads/leads.service";
+import { AWAITING_SUPERVISOR_MESSAGE, createLead, trashLead } from "@/server/modules/leads/leads.service";
 import { createTestDatabase, seedOrganization } from "../support/db";
 import { insertCourse, setLeadStage } from "../support/leads";
 
@@ -145,17 +145,22 @@ describe("vendedor chamando actions administrativas diretamente", () => {
     expect((await row(leadOfB1)).name).toBe("Lead do B1");
   });
 
-  it("Follow-up 3 vencido: o vendedor ainda registra atualização, mas não decide o destino", async () => {
+  it("Follow-up 3 vencido: somente leitura para o vendedor (sem atualização, edição, movimentação ou decisão)", async () => {
     await setLeadStage(handle, leadOfA1, "FOLLOW_UP_3", -1);
+    const before = await row(leadOfA1);
     await as(org.ids.sellerA1);
     expect(await actions.redistributeLeadAction(IDLE, form({ leadId: leadOfA1, toSellerId: org.ids.sellerA2 }))).toMatchObject({
       message: FORBIDDEN,
     });
     expect(await actions.trashLeadAction(IDLE, form({ leadId: leadOfA1 }))).toMatchObject({ message: FORBIDDEN });
-    expect(await actions.addLeadNoteAction(IDLE, form({ leadId: leadOfA1, body: "Cliente respondeu depois do prazo." }))).toMatchObject({
-      status: "success",
-    });
-    expect((await row(leadOfA1)).stage).toBe("FOLLOW_UP_3");
+    for (const result of [
+      await actions.addLeadNoteAction(IDLE, form({ leadId: leadOfA1, body: "Cliente respondeu depois do prazo." })),
+      await actions.editLeadAction(IDLE, form({ leadId: leadOfA1, name: "Outro Nome", phone: "79 98000-0001", interestCourseId: courseId })),
+      await actions.moveLeadStageAction(IDLE, form({ leadId: leadOfA1, toStage: "NEGOTIATION" })),
+    ]) {
+      expect(result).toMatchObject({ status: "error", message: AWAITING_SUPERVISOR_MESSAGE });
+    }
+    expect(await row(leadOfA1)).toEqual(before);
   });
 });
 
@@ -184,5 +189,48 @@ describe("supervisor não opera outra equipe pela action", () => {
     const result = await actions.redistributeLeadAction(IDLE, form({ leadId: leadOfA1, toSellerId: org.ids.sellerA2 }));
     expect(result).toMatchObject({ status: "success" });
     expect(await row(leadOfA1)).toMatchObject({ ownerId: org.ids.sellerA2, stage: "REWORK" });
+  });
+});
+
+describe("movimentação pela action (tentativas de burlar a máquina de estados)", () => {
+  it("vendedor: destino fora do mapa, Fechamento e Retrabalho são recusados com mensagem de negócio", async () => {
+    const id = (await createLead(await org.ctx(org.ids.sellerA1), { name: "Burla", phone: "79 98000-0100", interestCourseId: courseId })).id;
+    await as(org.ids.sellerA1);
+    const attempts = {
+      FOLLOW_UP_3: "Movimentação não permitida: de Lead cadastrado para Follow-up 3.",
+      CLOSED: "Fechamento só acontece ao registrar uma venda (disponível na fase de Vendas).",
+      REWORK: "Retrabalho só acontece por redistribuição ou recuperação da Lixeira, feitas pelo supervisor.",
+    };
+    for (const [toStage, message] of Object.entries(attempts)) {
+      expect(await actions.moveLeadStageAction(IDLE, form({ leadId: id, toStage }))).toMatchObject({ status: "error", message });
+    }
+    expect((await row(id)).stage).toBe("NEW");
+    expect(await actions.moveLeadStageAction(IDLE, form({ leadId: id, toStage: "NO_ANSWER" }))).toMatchObject({
+      status: "success",
+      message: "Lead movido para Não respondeu.",
+    });
+  });
+
+  it("supervisor e admin não movimentam; vendedor não movimenta lead de outro", async () => {
+    const id = (await createLead(await org.ctx(org.ids.sellerA2), { name: "Do A2", phone: "79 98000-0101", interestCourseId: courseId })).id;
+    for (const userId of [org.ids.supA, org.ids.admin]) {
+      await as(userId);
+      expect(await actions.moveLeadStageAction(IDLE, form({ leadId: id, toStage: "NO_ANSWER" }))).toMatchObject({ message: FORBIDDEN });
+    }
+    await as(org.ids.sellerA1);
+    expect(await actions.moveLeadStageAction(IDLE, form({ leadId: id, toStage: "NO_ANSWER" }))).toMatchObject({ message: NOT_FOUND });
+    expect((await row(id)).stage).toBe("NEW");
+  });
+
+  it("negociação vencida: a action de cadastro e a de mover outro lead devolvem o aviso do bloqueio", async () => {
+    const negotiation = (await createLead(await org.ctx(org.ids.sellerB1), { name: "Negociando", phone: "79 98000-0102", interestCourseId: courseId })).id;
+    const other = (await createLead(await org.ctx(org.ids.sellerB1), { name: "Outro", phone: "79 98000-0103", interestCourseId: courseId })).id;
+    await setLeadStage(handle, negotiation, "NEGOTIATION", -1);
+    await as(org.ids.sellerB1);
+    const message = "Você possui uma negociação vencida. Atualize-a para continuar cadastrando ou movimentando leads.";
+    expect(await actions.createLeadAction(IDLE, form({ name: "Mais Um", phone: "79 98000-0104", interestCourseId: courseId }))).toMatchObject({ message });
+    expect(await actions.moveLeadStageAction(IDLE, form({ leadId: other, toStage: "NO_ANSWER" }))).toMatchObject({ message });
+    expect(await actions.addLeadNoteAction(IDLE, form({ leadId: negotiation, body: "Atualizada." }))).toMatchObject({ status: "success" });
+    expect(await actions.moveLeadStageAction(IDLE, form({ leadId: other, toStage: "NO_ANSWER" }))).toMatchObject({ status: "success" });
   });
 });

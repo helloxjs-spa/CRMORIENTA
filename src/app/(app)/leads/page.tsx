@@ -9,7 +9,7 @@ import { cn } from "@/lib/cn";
 import { courseLabel } from "@/lib/leads";
 import { hasPermission } from "@/server/authz/permissions";
 import { listCourseFilterOptions } from "@/server/modules/courses/courses.service";
-import { countDecisionQueue, listLeadSellers } from "@/server/modules/leads/leads.service";
+import { countDecisionQueue, getNegotiationBlock, listLeadSellers } from "@/server/modules/leads/leads.service";
 import { listTeams } from "@/server/modules/teams/teams.service";
 import { requireServiceContext } from "@/server/next/session";
 import { LeadActionsProvider } from "./lead-actions";
@@ -17,6 +17,7 @@ import { LeadDetail, LeadDetailSkeleton } from "./lead-detail";
 import { NewLeadDialog } from "./lead-dialogs";
 import { LeadsResults, LeadsResultsSkeleton, type Viewer } from "./leads-results";
 import { LeadsToolbar, type ToolbarOptions } from "./leads-toolbar";
+import { NegotiationBanner } from "./negotiation-banner";
 import { leadsHref, parseLeadsParams, type LeadsParams, type QueueFilter } from "./search-params";
 
 export const metadata: Metadata = { title: "Leads" };
@@ -37,12 +38,14 @@ export default async function LeadsPage({ searchParams }: PageProps<"/leads">) {
   const params: LeadsParams = canManage ? raw : { ...raw, view: "carteira", seller: undefined, team: undefined };
   const viewer: Viewer = { actor, canManage, isAdmin };
 
-  const [courses, sellers, teams, queue] = await Promise.all([
+  const [courses, sellers, teams, queue, block] = await Promise.all([
     listCourseFilterOptions(ctx),
     canManage ? listLeadSellers(ctx) : Promise.resolve([]),
     isAdmin ? listTeams(ctx) : Promise.resolve([]),
     canManage ? countDecisionQueue(ctx) : Promise.resolve(null),
+    getNegotiationBlock(ctx),
   ]);
+  const situation = { negotiationBlocked: (block?.count ?? 0) > 0 };
 
   const toolbarOptions: ToolbarOptions = {
     stages: true,
@@ -61,6 +64,8 @@ export default async function LeadsPage({ searchParams }: PageProps<"/leads">) {
         description="Gerencie sua carteira e acompanhe o andamento dos contatos."
         actions={canCreate && actor.teamId ? <NewLeadDialog courses={courses.filter((c) => c.active)} /> : undefined}
       />
+
+      <NegotiationBanner block={block} openHref={(id) => leadsHref(params, { lead: id })} />
 
       {canCreate && !actor.teamId && (
         <Card className="mb-4 px-4 py-3 text-sm text-amber-800 ring-amber-200">
@@ -114,7 +119,7 @@ export default async function LeadsPage({ searchParams }: PageProps<"/leads">) {
       {params.lead && (
         <Drawer closeHref={leadsHref(params, { lead: undefined })} label="Detalhes do lead">
           <Suspense key={params.lead} fallback={<LeadDetailSkeleton />}>
-            <LeadDetail ctx={ctx} id={params.lead} courses={courses} />
+            <LeadDetail ctx={ctx} id={params.lead} courses={courses} situation={situation} />
           </Suspense>
         </Drawer>
       )}

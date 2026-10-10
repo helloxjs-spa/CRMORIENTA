@@ -6,12 +6,20 @@ import {
   addLeadNote,
   createLead,
   editLead,
+  moveLeadStage,
   redistributeLead,
   restoreLead,
   transferLead,
   trashLead,
 } from "@/server/modules/leads/leads.service";
+import { STAGE_LABELS } from "@/lib/leads";
 import { runAction, text } from "@/server/next/action";
+
+/** Lista e Kanban mostram os mesmos leads: as duas telas são atualizadas. */
+function revalidateLeadViews() {
+  revalidatePath("/leads");
+  revalidatePath("/kanban");
+}
 
 // Actions finas: leem campos explícitos do FormData e delegam ao serviço, que
 // aplica RBAC, escopo (404 fora dele), validação e grava o histórico. Erros de
@@ -24,7 +32,7 @@ export async function createLeadAction(_prev: ActionState, formData: FormData): 
       phone: text(formData, "phone"),
       interestCourseId: text(formData, "interestCourseId"),
     });
-    revalidatePath("/leads");
+    revalidateLeadViews();
     return "Lead cadastrado.";
   });
 }
@@ -36,7 +44,7 @@ export async function editLeadAction(_prev: ActionState, formData: FormData): Pr
       phone: text(formData, "phone"),
       interestCourseId: text(formData, "interestCourseId"),
     });
-    revalidatePath("/leads");
+    revalidateLeadViews();
     return "Dados do lead salvos.";
   });
 }
@@ -44,7 +52,7 @@ export async function editLeadAction(_prev: ActionState, formData: FormData): Pr
 export async function addLeadNoteAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   return runAction(async (ctx) => {
     await addLeadNote(ctx, text(formData, "leadId"), { body: text(formData, "body") });
-    revalidatePath("/leads");
+    revalidateLeadViews();
     return "Atualização registrada.";
   });
 }
@@ -52,7 +60,7 @@ export async function addLeadNoteAction(_prev: ActionState, formData: FormData):
 export async function transferLeadAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   return runAction(async (ctx) => {
     await transferLead(ctx, text(formData, "leadId"), { toSellerId: text(formData, "toSellerId") });
-    revalidatePath("/leads");
+    revalidateLeadViews();
     return "Lead transferido. Etapa e prazo foram mantidos.";
   });
 }
@@ -60,7 +68,7 @@ export async function transferLeadAction(_prev: ActionState, formData: FormData)
 export async function redistributeLeadAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   return runAction(async (ctx) => {
     await redistributeLead(ctx, text(formData, "leadId"), { toSellerId: text(formData, "toSellerId") });
-    revalidatePath("/leads");
+    revalidateLeadViews();
     return "Lead redistribuído em Retrabalho, com um novo ciclo.";
   });
 }
@@ -68,7 +76,7 @@ export async function redistributeLeadAction(_prev: ActionState, formData: FormD
 export async function trashLeadAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   return runAction(async (ctx) => {
     await trashLead(ctx, text(formData, "leadId"));
-    revalidatePath("/leads");
+    revalidateLeadViews();
     return "Lead enviado para a Lixeira.";
   });
 }
@@ -76,7 +84,15 @@ export async function trashLeadAction(_prev: ActionState, formData: FormData): P
 export async function restoreLeadAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   return runAction(async (ctx) => {
     await restoreLead(ctx, text(formData, "leadId"), { toSellerId: text(formData, "toSellerId") });
-    revalidatePath("/leads");
+    revalidateLeadViews();
     return "Lead recuperado em Retrabalho, com um novo ciclo.";
+  });
+}
+
+export async function moveLeadStageAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return runAction(async (ctx) => {
+    const lead = await moveLeadStage(ctx, text(formData, "leadId"), { toStage: text(formData, "toStage") });
+    revalidateLeadViews();
+    return `Lead movido para ${STAGE_LABELS[lead.stage]}.`;
   });
 }

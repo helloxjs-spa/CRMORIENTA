@@ -2,7 +2,7 @@ import { and, asc, count, desc, eq, ilike, isNotNull, isNull, like, lt, or, sql,
 import { alias } from "drizzle-orm/pg-core";
 import { z } from "zod";
 import { parseBrazilianPhone, phoneSearchDigits } from "@/lib/phone";
-import { LEAD_PAGE_SIZES, type LeadQueueReason } from "@/lib/leads";
+import { canTransition, LEAD_PAGE_SIZES, STAGE_LABELS, STAGES_WITH_DEADLINE, type LeadQueueReason } from "@/lib/leads";
 import type { Actor } from "@/server/authz/actor";
 import { assertPermission } from "@/server/authz/permissions";
 import { ownedScope } from "@/server/authz/scope";
@@ -139,6 +139,26 @@ export class LeadAlreadyExistsError extends ConflictError {
 }
 
 
+/** Lead com Follow-up 3 vencido: somente leitura para o vendedor (C27/C32). */
+export const AWAITING_SUPERVISOR_MESSAGE =
+  "Este lead aguarda a decisão do supervisor (Follow-up 3 vencido). Você pode consultá-lo, mas não alterá-lo.";
+
+/**
+ * Vendedor com negociação vencida: não cadastra leads nem movimenta outros
+ * leads até atualizar a(s) negociação(ões) (Documento Mestre §8; C34).
+ */
+export class NegotiationOverdueError extends ConflictError {
+  constructor(readonly overdueCount: number) {
+    super(
+      overdueCount === 1
+        ? "Você possui uma negociação vencida. Atualize-a para continuar cadastrando ou movimentando leads."
+        : `Você possui ${overdueCount} negociações vencidas. Atualize-as para continuar cadastrando ou movimentando leads.`,
+    );
+  }
+}
+
+export type NegotiationBlock = { count: number; leads: { id: string; name: string; stageDueAt: Date }[] };
+
 // ---------------------------------------------------------------------------
 // Validação
 // ---------------------------------------------------------------------------
@@ -174,6 +194,8 @@ const editLeadSchema = z.strictObject({
 
 const sellerChoiceSchema = z.strictObject({ toSellerId: idSchema });
 
+const moveStageSchema = z.strictObject({ toStage: z.enum(LEAD_STAGES, { error: "Etapa inválida." }) });
+
 const noteSchema = z.strictObject({
   body: z.string().trim().min(1, "Escreva a observação.").max(5000, "Use no máximo 5.000 caracteres."),
 });
@@ -190,6 +212,8 @@ const listFiltersSchema = z.strictObject({
   queue: z.enum(["ALL", "UNASSIGNED", "FOLLOW_UP_3_EXPIRED"]).optional(),
   /** Nome ou trecho do telefone (aceita o telefone formatado). */
   search: z.string().trim().max(120).optional(),
+  /** "deadline": prazo mais próximo primeiro (Kanban); padrão: mais recentes. */
+  order: z.enum(["recent", "deadline"]).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -390,7 +414,9 @@ export async function listLeads({ db, actor }: ServiceContext, rawFilters: unkno
 
   const order = filters.queue
     ? [asc(sql`coalesce(${leads.unassignedAt}, ${leads.stageDueAt})`), asc(leads.id)]
-    : filters.status === "TRASHED"
+    : filters.order === "deadline"
+      ? [sql`${leads.stageDueAt} asc nulls last`, desc(leads.createdAt), desc(leads.id)]
+      : filters.status === "TRASHED"
       ? [desc(leads.trashedAt), desc(leads.id)]
       : [desc(leads.createdAt), desc(leads.id)];
   const rows =
@@ -494,6 +520,55 @@ export async function listLeadSellers({ db, actor }: ServiceContext): Promise<Le
 }
 
 // ---------------------------------------------------------------------------
+// Travas operacionais do vendedor
+// ---------------------------------------------------------------------------
+
+/** Negociações vencidas do vendedor (ativas, prazo no passado), mais antigas primeiro. */
+async function overdueNegotiations(db: Database, sellerId: string, exceptLeadId?: string) {
+  return db
+    .select({ id: leads.id, name: leads.name, stageDueAt: leads.stageDueAt })
+    .from(leads)
+    .where(
+      and(
+        eq(leads.ownerId, sellerId),
+        eq(leads.stage, "NEGOTIATION"),
+        eq(leads.status, "ACTIVE"),
+        lt(leads.stageDueAt, sql`now()`),
+        exceptLeadId ? sql`${leads.id} <> ${exceptLeadId}` : undefined,
+      ),
+    )
+    .orderBy(asc(leads.stageDueAt));
+}
+
+/** SELLER com negociação vencida (fora `exceptLeadId`) → NegotiationOverdueError. */
+async function assertNoOverdueNegotiation(db: Database, actor: Actor, exceptLeadId?: string): Promise<void> {
+  if (actor.role !== "SELLER") return;
+  const overdue = await overdueNegotiations(db, actor.userId, exceptLeadId);
+  if (overdue.length > 0) throw new NegotiationOverdueError(overdue.length);
+}
+
+/** Follow-up 3 vencido: o vendedor só consulta; quem decide é o supervisor. */
+function assertSellerMayChange(actor: Actor, lead: QueueFields): void {
+  if (actor.role === "SELLER" && queueReasonOf(lead, new Date()) === "FOLLOW_UP_3_EXPIRED") {
+    throw new ConflictError(AWAITING_SUPERVISOR_MESSAGE);
+  }
+}
+
+/**
+ * Bloqueio por negociação vencida do vendedor logado (para o aviso da tela).
+ * null para quem não tem carteira.
+ */
+export async function getNegotiationBlock({ db, actor }: ServiceContext): Promise<NegotiationBlock | null> {
+  assertPermission(actor, "leads:view");
+  if (actor.role !== "SELLER") return null;
+  const overdue = await overdueNegotiations(db, actor.userId);
+  return {
+    count: overdue.length,
+    leads: overdue.map((l) => ({ id: l.id, name: l.name, stageDueAt: l.stageDueAt! })),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Cadastro (SELLER)
 // ---------------------------------------------------------------------------
 
@@ -509,6 +584,7 @@ export async function createLead(ctx: ServiceContext, input: unknown): Promise<L
   const data = parseInput(createLeadSchema, input);
   const teamId = actor.teamId;
   if (!teamId) throw new ValidationError("Você não está vinculado a uma equipe. Procure o administrador.");
+  await assertNoOverdueNegotiation(db, actor);
 
   const duplicate = await findDuplicate(db, data.phone);
   if (duplicate) throw new LeadAlreadyExistsError(duplicate);
@@ -595,6 +671,7 @@ export async function editLead(ctx: ServiceContext, rawId: unknown, input: unkno
     await db.transaction(async (tx) => {
       const lead = await lockLead(tx, actor, id);
       if (lead.status === "TRASHED") throw new ValidationError("Lead na Lixeira não pode ser editado. Recupere-o primeiro.");
+      assertSellerMayChange(actor, lead);
 
       const changes: Record<string, { from: unknown; to: unknown }> = {};
       if (data.name !== undefined && data.name !== lead.name) changes.name = { from: lead.name, to: data.name };
@@ -660,6 +737,7 @@ export async function addLeadNote({ db, actor }: ServiceContext, rawId: unknown,
 
   await db.transaction(async (tx) => {
     const lead = await lockLead(tx, actor, id);
+    assertSellerMayChange(actor, lead);
     const cycle = await currentCycle(tx, lead.id);
     const [note] = await tx
       .insert(leadNotes)
@@ -687,6 +765,67 @@ export async function addLeadNote({ db, actor }: ServiceContext, rawId: unknown,
       },
     ]);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Movimentação de etapa (Kanban) — vendedor responsável
+// ---------------------------------------------------------------------------
+
+/**
+ * Move o lead para outra etapa, validando no backend, nesta ordem: permissão
+ * e escopo (lead próprio e ativo), negociação vencida em OUTRO lead, transição
+ * permitida (STAGE_TRANSITIONS) e Follow-up 3 vencido. Define a entrada na
+ * etapa e o prazo (24 h corridas nas etapas com prazo; nenhum nas demais) e
+ * grava STAGE_CHANGED, tudo na mesma transação.
+ */
+export async function moveLeadStage({ db, actor }: ServiceContext, rawId: unknown, input: unknown): Promise<LeadView> {
+  assertPermission(actor, "leads:move");
+  const id = parseInput(idSchema, rawId);
+  const { toStage } = parseInput(moveStageSchema, input);
+
+  await db.transaction(async (tx) => {
+    const lead = await lockLead(tx, actor, id);
+    // A própria negociação vencida pode ser movida; as outras ficam travadas.
+    await assertNoOverdueNegotiation(tx, actor, lead.id);
+
+    if (toStage === lead.stage) throw new ValidationError(`O lead já está em ${STAGE_LABELS[toStage]}.`);
+    if (toStage === "CLOSED") {
+      throw new ValidationError("Fechamento só acontece ao registrar uma venda (disponível na fase de Vendas).");
+    }
+    if (toStage === "REWORK") {
+      throw new ValidationError("Retrabalho só acontece por redistribuição ou recuperação da Lixeira, feitas pelo supervisor.");
+    }
+    if (!canTransition(lead.stage, toStage)) {
+      throw new ValidationError(`Movimentação não permitida: de ${STAGE_LABELS[lead.stage]} para ${STAGE_LABELS[toStage]}.`);
+    }
+    assertSellerMayChange(actor, lead);
+
+    const hours = toStage === "NEGOTIATION" ? BUSINESS_RULES.negotiationDeadlineHours : BUSINESS_RULES.followUpDeadlineHours;
+    await tx
+      .update(leads)
+      .set({
+        stage: toStage,
+        stageEnteredAt: sql`now()`,
+        stageDueAt: STAGES_WITH_DEADLINE.includes(toStage) ? sql`now() + make_interval(hours => ${hours})` : null,
+      })
+      .where(eq(leads.id, lead.id));
+
+    const cycle = await currentCycle(tx, lead.id);
+    await recordLeadEvents(tx, [
+      {
+        leadId: lead.id,
+        cycleId: cycle.id,
+        type: "STAGE_CHANGED",
+        actorId: actor.userId,
+        stage: toStage,
+        fromStage: lead.stage,
+        ownerId: lead.ownerId,
+        teamId: lead.teamId,
+        supervisorId: await supervisorOf(tx, lead.teamId),
+      },
+    ]);
+  });
+  return (await findLeadView(db, actor, id))!;
 }
 
 // ---------------------------------------------------------------------------

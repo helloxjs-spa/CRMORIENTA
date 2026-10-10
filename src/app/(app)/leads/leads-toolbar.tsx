@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { STAGE_LABELS, STAGE_ORDER } from "@/lib/leads";
 import type { LeadStage } from "@/server/db/schema";
-import { hasResultFilters, leadsHref, type LeadsParams } from "./search-params";
+import { hasResultFilters, leadsHref, type LeadsBasePath, type LeadsParams } from "./search-params";
 
 export type FilterOption = { id: string; label: string };
 
@@ -25,7 +25,15 @@ const selectClasses =
  * Busca e filtros da tela de Leads. Todo o estado fica na URL (a página do
  * servidor relê os parâmetros e consulta o banco já paginado).
  */
-export function LeadsToolbar({ params, options }: { params: LeadsParams; options: ToolbarOptions }) {
+export function LeadsToolbar({
+  params,
+  options,
+  basePath = "/leads",
+}: {
+  params: LeadsParams;
+  options: ToolbarOptions;
+  basePath?: LeadsBasePath;
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -41,7 +49,7 @@ export function LeadsToolbar({ params, options }: { params: LeadsParams; options
 
   const navigate = (overrides: Partial<LeadsParams>) => {
     // Qualquer mudança de filtro volta para a página 1 e fecha o drawer.
-    startTransition(() => router.replace(leadsHref(params, { page: 1, lead: undefined, ...overrides }), { scroll: false }));
+    startTransition(() => router.replace(leadsHref(params, { page: 1, lead: undefined, ...overrides }, basePath), { scroll: false }));
   };
 
   const debounce = useRef<ReturnType<typeof setTimeout>>(undefined);

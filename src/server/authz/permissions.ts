@@ -30,6 +30,8 @@ const MATRIX = {
   "leads:edit": ["ADMIN", "SUPERVISOR", "SELLER"],
   /** Observações: quem opera o lead (o vendedor responsável). */
   "leads:addNote": ["SELLER"],
+  /** Movimentar etapas no Kanban: só quem tem carteira (decisão C5). */
+  "leads:move": ["SELLER"],
   "leads:transfer": ["ADMIN", "SUPERVISOR"],
   "leads:redistribute": ["ADMIN", "SUPERVISOR"],
   "leads:trash": ["ADMIN", "SUPERVISOR"],

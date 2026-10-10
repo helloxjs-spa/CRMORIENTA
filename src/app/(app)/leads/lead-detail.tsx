@@ -1,4 +1,4 @@
-import { Hourglass, Phone, SearchX, Trash2, UserX } from "lucide-react";
+import { AlertTriangle, Hourglass, Lock, Phone, SearchX, Trash2, UserX } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -14,7 +14,8 @@ import { EditLeadDialog, type CourseChoice } from "./lead-dialogs";
 import { LeadTimeline } from "./lead-timeline";
 import { actionTarget } from "./leads-results";
 import { NoteForm } from "./note-form";
-import { leadActionsFor } from "./policy";
+import { leadActionsFor, moveTargetsFor, type SellerSituation } from "./policy";
+import { MoveStageButtons } from "./stage-move";
 
 function Info({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -46,7 +47,17 @@ function Notice({ icon: Icon, tone, title, children }: { icon: typeof Hourglass;
  * Conteúdo do drawer do lead. getLead aplica RBAC + escopo: fora dele (ou ID
  * inválido) a mensagem é a mesma de um lead inexistente.
  */
-export async function LeadDetail({ ctx, id, courses }: { ctx: ServiceContext; id: string; courses: CourseChoice[] }) {
+export async function LeadDetail({
+  ctx,
+  id,
+  courses,
+  situation,
+}: {
+  ctx: ServiceContext;
+  id: string;
+  courses: CourseChoice[];
+  situation: SellerSituation;
+}) {
   let lead;
   try {
     lead = await getLead(ctx, id);
@@ -63,8 +74,13 @@ export async function LeadDetail({ ctx, id, courses }: { ctx: ServiceContext; id
     throw error;
   }
   const [timeline, now] = [await getLeadTimeline(ctx, id), new Date()];
-  const actions = leadActionsFor(lead, ctx.actor);
+  const actions = leadActionsFor(lead, ctx.actor, situation);
+  const targets = moveTargetsFor(lead, ctx.actor, situation, now);
   const isSeller = ctx.actor.role === "SELLER";
+  const isOwnOverdueNegotiation =
+    isSeller && lead.ownerId === ctx.actor.userId && lead.status === "ACTIVE" && lead.stage === "NEGOTIATION" && !!lead.stageDueAt && lead.stageDueAt < now;
+  const blockedHere =
+    isSeller && situation.negotiationBlocked && !isOwnOverdueNegotiation && lead.status === "ACTIVE" && lead.queueReason !== "FOLLOW_UP_3_EXPIRED";
 
   return (
     <div className="space-y-6 p-6 pt-5">
@@ -80,6 +96,7 @@ export async function LeadDetail({ ctx, id, courses }: { ctx: ServiceContext; id
           {lead.status === "TRASHED" ? <Badge tone="danger">Na Lixeira</Badge> : <StageBadge stage={lead.stage} />}
           {lead.status === "ACTIVE" && <DeadlineBadge lead={lead} now={now} withDetail={false} />}
         </div>
+        <MoveStageButtons leadId={lead.id} targets={targets} />
         {(actions.includes("edit") || actions.some((a) => a !== "edit" && a !== "note")) && (
           <div className="flex flex-wrap gap-2">
             {actions.includes("edit") && (
@@ -98,6 +115,17 @@ export async function LeadDetail({ ctx, id, courses }: { ctx: ServiceContext; id
           {isSeller
             ? "O Follow-up 3 venceu. O lead continua visível para você, mas não pode mais ser movimentado: o supervisor vai redistribuí-lo ou enviá-lo para a Lixeira."
             : "O Follow-up 3 venceu. Escolha entre Redistribuir (Retrabalho com novo ciclo) ou enviar para a Lixeira."}
+        </Notice>
+      )}
+      {isOwnOverdueNegotiation && (
+        <Notice icon={AlertTriangle} tone="danger" title="Negociação vencida">
+          Registre uma atualização abaixo: o prazo é renovado por mais 24 horas e, sem outras negociações vencidas, o bloqueio de cadastro e
+          movimentação é liberado.
+        </Notice>
+      )}
+      {blockedHere && (
+        <Notice icon={Lock} tone="warning" title="Movimentação bloqueada">
+          Você possui negociação vencida. Atualize-a para voltar a movimentar este lead.
         </Notice>
       )}
       {lead.queueReason === "UNASSIGNED" && (
