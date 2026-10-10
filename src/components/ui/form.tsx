@@ -15,6 +15,10 @@ export function Input({ className, ...props }: ComponentProps<"input">) {
   return <input className={cn(controlClasses, "h-10", className)} {...props} />;
 }
 
+export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
+  return <textarea className={cn(controlClasses, "min-h-24 resize-y", className)} {...props} />;
+}
+
 export function Select({ className, ...props }: ComponentProps<"select">) {
   return <select className={cn(controlClasses, "h-10 pr-8", className)} {...props} />;
 }

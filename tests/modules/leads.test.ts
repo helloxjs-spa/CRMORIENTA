@@ -11,7 +11,6 @@ import {
   getLead,
   getLeadTimeline,
   LeadAlreadyExistsError,
-  listDecisionQueue,
   listLeads,
   redistributeLead,
   restoreLead,
@@ -160,31 +159,31 @@ describe("escopo e ownership", () => {
 
   it("vendedor lista e abre só os próprios leads; trocar o ID dá NotFound", async () => {
     const a2 = await org.ctx(org.ids.sellerA2);
-    expect((await listLeads(a2)).map((l) => l.id)).not.toContain(leadA1);
-    expect(await listLeads(a2, { ownerId: org.ids.sellerA1 })).toEqual([]);
+    expect((await listLeads(a2)).items.map((l) => l.id)).not.toContain(leadA1);
+    expect((await listLeads(a2, { ownerId: org.ids.sellerA1 })).items).toEqual([]);
     await expect(getLead(a2, leadA1)).rejects.toBeInstanceOf(NotFoundError);
     await expect(getLeadTimeline(a2, leadA1)).rejects.toBeInstanceOf(NotFoundError);
     await expect(addLeadNote(a2, leadA1, { body: "Invasão" })).rejects.toBeInstanceOf(NotFoundError);
 
     const a1 = await org.ctx(org.ids.sellerA1);
-    const own = await listLeads(a1);
+    const own = (await listLeads(a1)).items;
     expect(own.length).toBeGreaterThan(0);
     expect(own.every((l) => l.ownerId === org.ids.sellerA1)).toBe(true);
   });
 
   it("supervisor vê os leads da equipe e não os de outra (nem por filtro)", async () => {
     const supA = await org.ctx(org.ids.supA);
-    const list = await listLeads(supA);
+    const list = (await listLeads(supA)).items;
     expect(list.every((l) => l.teamId === org.ids.teamA)).toBe(true);
     expect(list.map((l) => l.id)).toContain(leadA1);
-    expect(await listLeads(supA, { teamId: org.ids.teamB })).toEqual([]);
+    expect((await listLeads(supA, { teamId: org.ids.teamB })).items).toEqual([]);
     await expect(getLead(supA, leadB1)).rejects.toBeInstanceOf(NotFoundError);
     await expect(transferLead(supA, leadB1, { toSellerId: org.ids.sellerA1 })).rejects.toBeInstanceOf(NotFoundError);
     await expect(trashLead(supA, leadB1)).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it("administrador vê leads de todas as equipes", async () => {
-    const ids = (await listLeads(await org.ctx(org.ids.admin))).map((l) => l.id);
+    const ids = (await listLeads(await org.ctx(org.ids.admin))).items.map((l) => l.id);
     expect(ids).toEqual(expect.arrayContaining([leadA1, leadB1]));
   });
 
@@ -194,15 +193,15 @@ describe("escopo e ownership", () => {
     await expect(redistributeLead(a1, leadA1, { toSellerId: org.ids.sellerA2 })).rejects.toBeInstanceOf(ForbiddenError);
     await expect(trashLead(a1, leadA1)).rejects.toBeInstanceOf(ForbiddenError);
     await expect(restoreLead(a1, leadA1, { toSellerId: org.ids.sellerA1 })).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(listDecisionQueue(a1)).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(listLeads(a1, { queue: "ALL" })).rejects.toBeInstanceOf(ForbiddenError);
   });
 
   it("busca por nome ou trecho do telefone", async () => {
     const supA = await org.ctx(org.ids.supA);
-    expect((await listLeads(supA, { search: "carla" })).map((l) => l.id)).toEqual([leadA1]);
+    expect((await listLeads(supA, { search: "carla" })).items.map((l) => l.id)).toEqual([leadA1]);
     const { phone } = await rowOf(leadA1);
     const formatted = `(79) ${phone.slice(4, 9)}-${phone.slice(9)}`;
-    expect((await listLeads(supA, { search: formatted })).map((l) => l.id)).toEqual([leadA1]);
+    expect((await listLeads(supA, { search: formatted })).items.map((l) => l.id)).toEqual([leadA1]);
   });
 });
 
@@ -330,14 +329,14 @@ describe("desativação do vendedor → fila do supervisor", () => {
   });
 
   it("os leads entram na fila do supervisor da equipe (e só dele)", async () => {
-    const queueA = await listDecisionQueue(await org.ctx(org.ids.supA));
+    const queueA = (await listLeads(await org.ctx(org.ids.supA), { queue: "ALL", pageSize: 100 })).items;
     expect(queueA.filter((q) => [inNegotiation, inFollowUp].includes(q.id)).map((q) => q.queueReason)).toEqual([
       "UNASSIGNED",
       "UNASSIGNED",
     ]);
-    const queueB = await listDecisionQueue(await org.ctx(org.ids.supB));
+    const queueB = (await listLeads(await org.ctx(org.ids.supB), { queue: "ALL", pageSize: 100 })).items;
     expect(queueB.map((q) => q.id)).not.toContain(inNegotiation);
-    expect((await listLeads(await org.ctx(org.ids.supA), { unassigned: true })).map((l) => l.id)).toEqual(
+    expect((await listLeads(await org.ctx(org.ids.supA), { queue: "UNASSIGNED" })).items.map((l) => l.id)).toEqual(
       expect.arrayContaining([inNegotiation, inFollowUp]),
     );
   });
@@ -419,7 +418,7 @@ describe("Follow-up 3 vencido → redistribuição (Retrabalho)", () => {
     await expect(redistributeLead(supA, lead.id, { toSellerId: org.ids.sellerA2 })).rejects.toBeInstanceOf(ValidationError);
     await setLeadStage(handle, lead.id, "FOLLOW_UP_3", 3);
     await expect(redistributeLead(supA, lead.id, { toSellerId: org.ids.sellerA2 })).rejects.toBeInstanceOf(ValidationError);
-    expect((await listDecisionQueue(supA)).map((q) => q.id)).not.toContain(lead.id);
+    expect((await listLeads(supA, { queue: "ALL", pageSize: 100 })).items.map((q) => q.id)).not.toContain(lead.id);
   });
 
   it("FU3 vencido aparece na fila; redistribuir abre ciclo 2 REWORK com o novo vendedor", async () => {
@@ -427,7 +426,7 @@ describe("Follow-up 3 vencido → redistribuição (Retrabalho)", () => {
     await setLeadStage(handle, lead.id, "FOLLOW_UP_3", -1);
     const supA = await org.ctx(org.ids.supA);
 
-    const item = (await listDecisionQueue(supA)).find((q) => q.id === lead.id);
+    const item = (await listLeads(supA, { queue: "ALL", pageSize: 100 })).items.find((q) => q.id === lead.id);
     expect(item).toMatchObject({ queueReason: "FOLLOW_UP_3_EXPIRED", ownerId: org.ids.sellerA1 });
     await expect(redistributeLead(await org.ctx(org.ids.supB), lead.id, { toSellerId: org.ids.sellerB1 })).rejects.toBeInstanceOf(
       NotFoundError,
@@ -449,7 +448,7 @@ describe("Follow-up 3 vencido → redistribuição (Retrabalho)", () => {
       fromOwnerId: org.ids.sellerA1,
       ownerId: org.ids.sellerA2,
     });
-    expect((await listDecisionQueue(supA)).map((q) => q.id)).not.toContain(lead.id);
+    expect((await listLeads(supA, { queue: "ALL", pageSize: 100 })).items.map((q) => q.id)).not.toContain(lead.id);
     await expect(getLead(await org.ctx(org.ids.sellerA1), lead.id)).rejects.toBeInstanceOf(NotFoundError);
 
     // Cada fato aponta para o seu ciclo: o atendimento inicial e o retrabalho são distinguíveis.
@@ -478,9 +477,9 @@ describe("Lixeira e recuperação", () => {
 
   it("o vendedor deixa de ver o lead; supervisor e admin continuam vendo", async () => {
     await expect(getLead(await org.ctx(org.ids.sellerA1), lead.id)).rejects.toBeInstanceOf(NotFoundError);
-    expect((await listLeads(await org.ctx(org.ids.sellerA1))).map((l) => l.id)).not.toContain(lead.id);
+    expect((await listLeads(await org.ctx(org.ids.sellerA1))).items.map((l) => l.id)).not.toContain(lead.id);
     await expect(getLead(await org.ctx(org.ids.supA), lead.id)).resolves.toMatchObject({ status: "TRASHED", cycleNumber: null });
-    expect((await listLeads(await org.ctx(org.ids.admin), { status: "TRASHED" })).map((l) => l.id)).toContain(lead.id);
+    expect((await listLeads(await org.ctx(org.ids.admin), { status: "TRASHED" })).items.map((l) => l.id)).toContain(lead.id);
   });
 
   it("telefone na Lixeira continua ocupado, com a mensagem combinada", async () => {

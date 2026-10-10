@@ -1,10 +1,11 @@
-import { and, asc, desc, eq, ilike, isNull, like, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, isNotNull, isNull, like, lt, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { z } from "zod";
 import { parseBrazilianPhone, phoneSearchDigits } from "@/lib/phone";
+import { LEAD_PAGE_SIZES, type LeadQueueReason } from "@/lib/leads";
 import type { Actor } from "@/server/authz/actor";
 import { assertPermission } from "@/server/authz/permissions";
-import { managedTeamScope, ownedScope } from "@/server/authz/scope";
+import { ownedScope } from "@/server/authz/scope";
 import { BUSINESS_RULES } from "@/server/config/business-rules";
 import type { ServiceContext } from "@/server/context";
 import { isUniqueViolation } from "@/server/db/errors";
@@ -65,12 +66,25 @@ export type LeadView = {
   unassignedAt: Date | null;
   unassignedReason: LeadUnassignedReason | null;
   trashedAt: Date | null;
+  trashedByName: string | null;
   /** Número do ciclo aberto (null na Lixeira). */
   cycleNumber: number | null;
   createdAt: Date;
+  /**
+   * Lead que aguarda decisão do supervisor: sem responsável (vendedor
+   * desativado) ou com Follow-up 3 vencido. Calculado a cada leitura.
+   */
+  queueReason: LeadQueueReason | null;
 };
 
-export type DecisionQueueItem = LeadView & { queueReason: "UNASSIGNED" | "FOLLOW_UP_3_EXPIRED" };
+export type { LeadQueueReason };
+
+export type Paginated<T> = { items: T[]; page: number; pageSize: number; total: number; totalPages: number };
+
+export type DecisionQueueCounts = { unassigned: number; followUp3Expired: number };
+
+/** Vendedor no escopo do ator (filtro por vendedor e escolha de destino). */
+export type LeadSellerOption = { id: string; name: string; active: boolean; teamId: string | null; teamName: string | null };
 
 export type LeadTimelineEntry = {
   id: number;
@@ -124,7 +138,6 @@ export class LeadAlreadyExistsError extends ConflictError {
   }
 }
 
-export const LEADS_PAGE_SIZE = 200;
 
 // ---------------------------------------------------------------------------
 // Validação
@@ -166,13 +179,16 @@ const noteSchema = z.strictObject({
 });
 
 const listFiltersSchema = z.strictObject({
+  page: z.number().int().min(1).max(100_000).optional(),
+  pageSize: z.union(LEAD_PAGE_SIZES.map((size) => z.literal(size))).optional(),
   status: z.enum(LEAD_STATUSES).optional(),
   stage: z.enum(LEAD_STAGES).optional(),
+  courseId: idSchema.optional(),
   ownerId: idSchema.optional(),
   teamId: idSchema.optional(),
-  /** Apenas leads sem responsável (fila). */
-  unassigned: z.boolean().optional(),
-  /** Nome ou trecho do telefone. */
+  /** Fila de decisão (SUPERVISOR/ADMIN): todos os motivos ou um deles. */
+  queue: z.enum(["ALL", "UNASSIGNED", "FOLLOW_UP_3_EXPIRED"]).optional(),
+  /** Nome ou trecho do telefone (aceita o telefone formatado). */
   search: z.string().trim().max(120).optional(),
 });
 
@@ -189,6 +205,7 @@ function leadScope(actor: Actor): SQL | undefined {
 }
 
 const owner = alias(users, "lead_owner");
+const trasher = alias(users, "lead_trasher");
 const openCycle = alias(leadCycles, "open_cycle");
 
 const leadView = {
@@ -209,9 +226,35 @@ const leadView = {
   unassignedAt: leads.unassignedAt,
   unassignedReason: leads.unassignedReason,
   trashedAt: leads.trashedAt,
+  trashedByName: trasher.name,
   cycleNumber: openCycle.number,
   createdAt: leads.createdAt,
 };
+
+/** Condições da fila de decisão (sempre combinadas com o escopo). */
+const queueConditions = {
+  UNASSIGNED: and(eq(leads.status, "ACTIVE"), isNull(leads.ownerId)),
+  FOLLOW_UP_3_EXPIRED: and(
+    eq(leads.status, "ACTIVE"),
+    isNotNull(leads.ownerId),
+    eq(leads.stage, "FOLLOW_UP_3"),
+    lt(leads.stageDueAt, sql`now()`),
+  ),
+};
+
+type QueueFields = { status: LeadStatus; ownerId: string | null; stage: LeadStage; stageDueAt: Date | null };
+
+function queueReasonOf(lead: QueueFields, now: Date): LeadQueueReason | null {
+  if (lead.status !== "ACTIVE") return null;
+  if (lead.ownerId === null) return "UNASSIGNED";
+  if (lead.stage === "FOLLOW_UP_3" && lead.stageDueAt !== null && lead.stageDueAt < now) return "FOLLOW_UP_3_EXPIRED";
+  return null;
+}
+
+function withQueueReason<T extends QueueFields>(rows: T[]): (T & { queueReason: LeadQueueReason | null })[] {
+  const now = new Date();
+  return rows.map((row) => ({ ...row, queueReason: queueReasonOf(row, now) }));
+}
 
 function selectLeadViews(db: Database) {
   return db
@@ -220,14 +263,15 @@ function selectLeadViews(db: Database) {
     .innerJoin(courses, eq(courses.id, leads.interestCourseId))
     .innerJoin(teams, eq(teams.id, leads.teamId))
     .leftJoin(owner, eq(owner.id, leads.ownerId))
+    .leftJoin(trasher, eq(trasher.id, leads.trashedBy))
     .leftJoin(openCycle, and(eq(openCycle.leadId, leads.id), isNull(openCycle.endedAt)));
 }
 
 async function findLeadView(db: Database, actor: Actor, id: string): Promise<LeadView | undefined> {
-  const [lead] = await selectLeadViews(db)
+  const rows = await selectLeadViews(db)
     .where(and(eq(leads.id, id), leadScope(actor)))
     .limit(1);
-  return lead;
+  return withQueueReason(rows)[0];
 }
 
 /** Lê e trava o lead para alteração, dentro do escopo do ator. */
@@ -311,26 +355,54 @@ async function findDuplicate(db: Database, phone: string) {
 // Leitura
 // ---------------------------------------------------------------------------
 
-export async function listLeads({ db, actor }: ServiceContext, rawFilters: unknown = {}): Promise<LeadView[]> {
+/**
+ * Listagem paginada no banco: o escopo do ator entra no WHERE junto com os
+ * filtros (filtrar por outro vendedor/equipe fora do escopo devolve vazio) e
+ * a contagem usa exatamente as mesmas condições.
+ */
+export async function listLeads({ db, actor }: ServiceContext, rawFilters: unknown = {}): Promise<Paginated<LeadView>> {
   assertPermission(actor, "leads:view");
   const filters = parseInput(listFiltersSchema, rawFilters);
+  if (filters.queue) assertPermission(actor, "leads:transfer");
 
   const conditions: (SQL | undefined)[] = [leadScope(actor)];
   if (filters.status) conditions.push(eq(leads.status, filters.status));
   if (filters.stage) conditions.push(eq(leads.stage, filters.stage));
+  if (filters.courseId) conditions.push(eq(leads.interestCourseId, filters.courseId));
   if (filters.ownerId) conditions.push(eq(leads.ownerId, filters.ownerId));
   if (filters.teamId) conditions.push(eq(leads.teamId, filters.teamId));
-  if (filters.unassigned) conditions.push(isNull(leads.ownerId));
+  if (filters.queue) {
+    conditions.push(
+      filters.queue === "ALL" ? or(queueConditions.UNASSIGNED, queueConditions.FOLLOW_UP_3_EXPIRED) : queueConditions[filters.queue],
+    );
+  }
   if (filters.search) {
     const term = `%${filters.search.replace(/[%_\\]/g, "\\$&")}%`;
     const digits = phoneSearchDigits(filters.search);
     conditions.push(or(ilike(leads.name, term), digits.length >= 3 ? like(leads.phone, `%${digits}%`) : undefined));
   }
+  const where = and(...conditions);
 
-  return selectLeadViews(db)
-    .where(and(...conditions))
-    .orderBy(desc(leads.createdAt))
-    .limit(LEADS_PAGE_SIZE);
+  const [{ total }] = await db.select({ total: count() }).from(leads).where(where);
+  const pageSize = filters.pageSize ?? LEAD_PAGE_SIZES[0];
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(filters.page ?? 1, totalPages);
+
+  const order = filters.queue
+    ? [asc(sql`coalesce(${leads.unassignedAt}, ${leads.stageDueAt})`), asc(leads.id)]
+    : filters.status === "TRASHED"
+      ? [desc(leads.trashedAt), desc(leads.id)]
+      : [desc(leads.createdAt), desc(leads.id)];
+  const rows =
+    total === 0
+      ? []
+      : await selectLeadViews(db)
+          .where(where)
+          .orderBy(...order)
+          .limit(pageSize)
+          .offset((page - 1) * pageSize);
+
+  return { items: withQueueReason(rows), page, pageSize, total, totalPages };
 }
 
 export async function getLead({ db, actor }: ServiceContext, rawId: unknown): Promise<LeadView> {
@@ -387,22 +459,38 @@ export async function getLeadTimeline(ctx: ServiceContext, rawId: unknown): Prom
 }
 
 /**
- * Fila de decisão do supervisor (ADMIN: todas as equipes): leads sem
- * responsável (vendedor desativado) e leads com Follow-up 3 vencido. Nada é
+ * Contagem da fila de decisão do supervisor (ADMIN: todas as equipes): leads
+ * sem responsável (vendedor desativado) e com Follow-up 3 vencido. Nada é
  * gravado quando o prazo vence: a fila é calculada a partir de stage_due_at.
+ * Os itens vêm de listLeads({ queue }).
  */
-export async function listDecisionQueue({ db, actor }: ServiceContext): Promise<DecisionQueueItem[]> {
+export async function countDecisionQueue({ db, actor }: ServiceContext): Promise<DecisionQueueCounts> {
   assertPermission(actor, "leads:transfer");
-  const rows = await selectLeadViews(db)
-    .where(
-      and(
-        managedTeamScope(actor, leads.teamId),
-        eq(leads.status, "ACTIVE"),
-        or(isNull(leads.ownerId), and(eq(leads.stage, "FOLLOW_UP_3"), lt(leads.stageDueAt, sql`now()`))),
-      ),
-    )
-    .orderBy(asc(sql`coalesce(${leads.unassignedAt}, ${leads.stageDueAt})`));
-  return rows.map((row) => ({ ...row, queueReason: row.ownerId === null ? "UNASSIGNED" : "FOLLOW_UP_3_EXPIRED" }));
+  const [row] = await db
+    .select({
+      unassigned: sql<number>`count(*) filter (where ${queueConditions.UNASSIGNED})`.mapWith(Number),
+      followUp3Expired: sql<number>`count(*) filter (where ${queueConditions.FOLLOW_UP_3_EXPIRED})`.mapWith(Number),
+    })
+    .from(leads)
+    .where(leadScope(actor));
+  return row;
+}
+
+/**
+ * Vendedores no escopo do ator, para filtros e para escolher o destino de
+ * transferência, redistribuição ou recuperação. SUPERVISOR: os da equipe que
+ * lidera; ADMIN: todos. Quem pode receber um lead é decidido de novo no
+ * serviço da operação (vendedor ativo, da equipe permitida).
+ */
+export async function listLeadSellers({ db, actor }: ServiceContext): Promise<LeadSellerOption[]> {
+  assertPermission(actor, "leads:transfer");
+  if (actor.role === "SUPERVISOR" && !actor.supervisedTeamId) return [];
+  return db
+    .select({ id: users.id, name: users.name, active: users.active, teamId: users.teamId, teamName: teams.name })
+    .from(users)
+    .leftJoin(teams, eq(teams.id, users.teamId))
+    .where(and(eq(users.role, "SELLER"), actor.role === "SUPERVISOR" ? eq(users.teamId, actor.supervisedTeamId!) : undefined))
+    .orderBy(asc(teams.name), asc(users.name));
 }
 
 // ---------------------------------------------------------------------------

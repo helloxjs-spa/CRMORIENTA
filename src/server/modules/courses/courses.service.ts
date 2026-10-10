@@ -70,6 +70,19 @@ export async function listActiveCourseOptions({ db, actor }: ServiceContext): Pr
     .orderBy(asc(courses.name), asc(courses.institutionName));
 }
 
+/**
+ * Cursos ativos E inativos, sem custo, para FILTRAR registros existentes (um
+ * lead antigo pode ter um curso hoje inativo). Para escolher curso num
+ * cadastro use listActiveCourseOptions.
+ */
+export async function listCourseFilterOptions({ db, actor }: ServiceContext): Promise<(CourseOption & { active: boolean })[]> {
+  assertPermission(actor, "courses:list");
+  return db
+    .select({ id: courses.id, name: courses.name, institutionName: courses.institutionName, active: courses.active })
+    .from(courses)
+    .orderBy(asc(courses.name), asc(courses.institutionName));
+}
+
 // ---------------------------------------------------------------------------
 // Gestão — somente ADMIN
 // ---------------------------------------------------------------------------
