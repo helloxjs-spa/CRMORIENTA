@@ -6,10 +6,11 @@ CRM web para a operação comercial de um polo educacional: equipes, vendedores,
 - **Arquitetura, modelo de dados, fases e dúvidas em aberto:** [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md)
 - **Banco de dados (Supabase) e fluxo de alterações:** [`database/README.md`](database/README.md)
 
-**Status:** Fase 0 (Fundação) e Fase 1 (Cursos) concluídas.
+**Status:** Fase 0 (Fundação) e Fase 1 (Cursos) concluídas; Fase 2 (Leads) com os serviços de backend prontos, ainda sem telas.
 
 - **Fundação:** autenticação, perfis (Administrador, Supervisor, Vendedor), equipes, autorização no backend (RBAC + ownership + escopo de equipe), auditoria e layout autenticado.
 - **Cursos:** curso + instituição, com custo da bolsa visível e editável só pelo administrador; lista de cursos ativos (curso e instituição, sem custo) para os demais perfis.
+- **Leads (backend):** cadastro com telefone brasileiro canônico e único (inclusive na Lixeira), carteira por vendedor, transferência, fila do supervisor (vendedor desativado e Follow-up 3 vencido), redistribuição com ciclos de Retrabalho, Lixeira e recuperação, observações e linha do tempo.
 
 Os módulos comerciais seguintes aparecem no menu como "em breve".
 

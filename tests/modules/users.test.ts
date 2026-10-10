@@ -133,6 +133,7 @@ describe("administrador", () => {
       toTeamId: org.ids.teamA,
       from: { teamId: org.ids.teamB, teamName: "Equipe B", supervisorId: org.ids.supB, supervisorName: "Supervisor B" },
       to: { teamId: org.ids.teamA, teamName: "Equipe A", supervisorId: org.ids.supA, supervisorName: "Supervisor A" },
+      movedLeads: 0,
     });
 
     // O escopo do supervisor acompanha a mudança imediatamente.

@@ -71,6 +71,10 @@ Valores monetários sempre em **centavos (integer)**. Datas em `timestamptz` (UT
 | `audit_events` | Log central de auditoria | **append-only** (trigger bloqueia UPDATE/DELETE) |
 | `courses` *(Fase 1)* | Curso: nome, **instituição** (`institution_name`), ativo/inativo, timestamps | par curso + instituição único (sem diferenciar maiúsculas/espaços); nome e instituição não vazios; **sem coluna de custo**; DELETE bloqueado por trigger |
 | `course_costs` *(Fase 1)* | Custo da bolsa em centavos (1:1 com o curso), `updated_at`, `updated_by` | `cost_cents >= 0`; DELETE bloqueado por trigger |
+| `leads` *(Fase 2)* | Lead: nome, `phone` canônico, curso de interesse (obrigatório), `owner_id` (vendedor; NULL = fila do supervisor), `team_id` (equipe **atual**, sempre preenchida), `stage`, `stage_entered_at`, `stage_due_at`, `status`, Lixeira (`trashed_at/by`), fila (`unassigned_at/reason`), `created_at` = data de cadastro | `phone` **UNIQUE para todos os leads, inclusive na Lixeira**, e `CHECK` de formato (55 + DDD válido + celular com 9º dígito ou fixo); prazo só em FU1/2/3 e Negociação; Lixeira e fila coerentes; responsável em operação = SELLER **ativo** da **mesma equipe** (trigger); `created_at/by` imutáveis; sem DELETE/TRUNCATE |
+| `lead_cycles` *(Fase 2)* | Ciclos de atendimento: `number`, `kind` (`INITIAL`/`REWORK`), vendedor e equipe que receberam o ciclo, abertura, encerramento (`REDISTRIBUTED`/`TRASHED`/`WON`) | no máximo **um ciclo aberto** por lead; lead em operação tem exatamente um, e é o mais recente; na Lixeira ou fechado, nenhum (verificado no COMMIT); ciclo encerrado imutável |
+| `lead_notes` *(Fase 2)* | Observações: autor, texto, ciclo e etapa (contexto), `created_at` | append-only (UPDATE/DELETE/TRUNCATE bloqueados); ciclo do mesmo lead (FK composta) |
+| `lead_events` *(Fase 2)* | Linha do tempo do lead: tipo, ator, momento, ciclo e **retrato depois do fato** (etapa, responsável, equipe, supervisor) + valores anteriores (`from_*`) | append-only; regras por tipo (ex.: `TRANSFERRED` exige novo responsável diferente; `UNASSIGNED` exige motivo) |
 
 Relação **Empresa → Supervisor → Vendedores**: empresa única (implícita); `teams.supervisor_id` (1:1) e `users.team_id` (N:1).
 
@@ -78,11 +82,6 @@ Relação **Empresa → Supervisor → Vendedores**: empresa única (implícita)
 
 | Entidade | Responsabilidade | Observações de modelagem |
 |---|---|---|
-| `leads` | Pessoa/prospect | `phone_normalized` **UNIQUE** (E.164, só dígitos): a constraint resolve corrida entre cadastros simultâneos; o serviço traduz a violação em "lead já existe, responsável: X". Campos: `owner_id` (**sempre um SELLER**, garantido por trigger), `team_id` (equipe responsável **atual**), `stage`, `status`, `current_cycle_id`, `stage_entered_at`, `stage_due_at` |
-| `lead_cycles` | **Ciclos de atendimento** | Um registro por tentativa comercial: `number` (1, 2, 3…), `kind` (`INITIAL` / `REWORK`), vendedor e equipe do ciclo, `started_at/by`, `ended_at`, `end_reason` (`FOLLOW_UP_EXPIRED`, `TRASHED`, `WON`, `TRANSFERRED`…). Permite saber se um Follow-up 1 pertence ao primeiro atendimento ou a um retrabalho |
-| `lead_interests` | Cursos de interesse (N:N lead↔curso) | O documento fala em "curso(s) de interesse" |
-| `lead_events` | **Linha do tempo do lead** (append-only) | Um registro por fato, sempre com `cycle_id`, `actor_id`, `occurred_at` e **retrato da equipe** (`team_id` no momento): criação, mudança de etapa (de/para), transferência (responsável/equipe de/para), mudança de equipe por troca do vendedor, redistribuição, lixeira, recuperação, venda. Substitui `LeadAssignmentHistory` + `LeadStageHistory` sem redundância |
-| `lead_notes` | Observações e atualizações de negociação | Imutáveis; nova observação nunca sobrescreve; `lead_events` referencia a nota |
 | `sales` | Cabeçalho: lead, vendedor, **`team_id` e `supervisor_id` da época (snapshot)**, data, valor total, forma de pagamento, status (`ACTIVE`/`REVERSED`), dados do estorno (quem, quando, motivo) | Faturamento, ranking e dashboards por equipe agrupam por `sales.team_id`, **nunca** pela equipe atual do vendedor. Estorno = colunas na própria venda (1:1) |
 | `sale_items` | Um curso vendido | Snapshot de `scholarship_cost_cents` e `commission_cents` no momento da venda: relatórios históricos não mudam quando custo ou comissão mudarem |
 | `installments` | Parcelas | `number`, `amount_cents`, `due_date`, `status` (`PENDING`/`PAID`), `paid_at`, `paid_by`; `UNIQUE(sale_id, number)`. Regras de geração (primeira data, recorrência, centavos) só serão definidas na fase financeira |
@@ -95,7 +94,7 @@ Decisão do cliente: quando o vendedor muda de equipe, **seus leads em aberto o 
 
 - `users.team_id` e `leads.team_id` = situação **atual**: definem o escopo operacional (o novo supervisor passa a ver os leads; o anterior deixa de ver).
 - `sales.team_id` / `sales.supervisor_id` e `lead_events.team_id` = **retrato do momento**, nunca reescritos. Os R$ 20.000 vendidos por João na Equipe A em setembro continuam na Equipe A.
-- A troca em si fica em `audit_events` (`user.team_changed`) com quem executou, quando e um retrato de origem e destino: equipe e supervisor, com IDs e nomes (**já implementado**). Na fase Leads, a mesma transação atualizará `leads.team_id` dos leads em aberto e gravará um `lead_event` `TEAM_CHANGED` para cada um.
+- A troca em si fica em `audit_events` (`user.team_changed`) com quem executou, quando e um retrato de origem e destino: equipe e supervisor, com IDs e nomes. A mesma transação atualiza `leads.team_id` dos leads em operação e grava um `lead_event` `TEAM_CHANGED` para cada um (`metadata.movedLeads` na auditoria). Um trigger em `users`, verificado no COMMIT, impede que um vendedor mude de equipe deixando leads em operação para trás.
 
 **Comissão não terá tabela própria**: é derivada de `sale_items.commission_cents` de vendas `ACTIVE`. O estorno muda o status da venda e a comissão deixa de contar automaticamente, sem risco de divergência. Se o cliente quiser controlar o **pagamento** de comissões ao vendedor, aí sim cria-se `commission_payouts`.
 
@@ -112,6 +111,30 @@ Decisão do cliente: quando o vendedor muda de equipe, **seus leads em aberto o 
 - **Dinheiro:** o valor digitado ("1.234,56") é convertido para centavos em [`src/lib/money.ts`](../src/lib/money.ts) sem ponto flutuante. O serviço só aceita inteiros entre 0 e R$ 1.000.000,00.
 - **Tela** `/cursos`: exclusiva do ADMIN (404 para os demais). Busca, filtro de status, criar, editar e ativar/desativar.
 
+### Leads (Fase 2)
+
+Serviços em [`src/server/modules/leads/leads.service.ts`](../src/server/modules/leads/leads.service.ts). Telas e Kanban visual ainda não existem.
+
+| Função do serviço | Quem pode | O que faz |
+|---|---|---|
+| `createLead` | SELLER (`leads:create`) | Cadastra na própria carteira e equipe: etapa `NEW`, ciclo 1 (`INITIAL`), evento `CREATED`. Curso de interesse ativo obrigatório |
+| `listLeads` / `getLead` | todos (`leads:view`) + escopo | SELLER: próprios leads **ativos**; SUPERVISOR: equipe que lidera (inclui fila e Lixeira); ADMIN: todos. Busca por nome ou trecho do telefone. Fora do escopo → 404 |
+| `editLead` | SELLER (próprios), SUPERVISOR (equipe), ADMIN (todos) — `leads:edit` + escopo | Edita **só** nome, telefone e curso de interesse (ativo). Lead na Lixeira: recusado (recuperar antes). Não mexe em responsável, equipe, etapa, prazos, situação nem ciclo. Só grava se algo mudou; evento `DETAILS_UPDATED` com de/para apenas dos campos alterados (curso com id, nome e instituição) |
+| `getLeadTimeline` | quem enxerga o lead | Todos os eventos, de todos os ciclos, com nomes do ator, responsável, equipe e supervisor da época, de → para e o texto da observação |
+| `addLeadNote` | SELLER responsável (`leads:addNote`) | Observação append-only no ciclo e etapa atuais. Em Negociação, renova o prazo (`negotiationDeadlineHours`) |
+| `transferLead` | SUPERVISOR (própria equipe), ADMIN (qualquer equipe) | Troca o responsável. **Mantém etapa, entrada na etapa, prazo e ciclo.** Também é a transferência administrativa de um lead da fila |
+| `redistributeLead` | SUPERVISOR, ADMIN | Só com **Follow-up 3 vencido**: encerra o ciclo (`REDISTRIBUTED`), abre ciclo `REWORK` para o vendedor escolhido, etapa `REWORK`, sem prazo |
+| `trashLead` | SUPERVISOR, ADMIN | Lixeira: encerra o ciclo (`TRASHED`), preserva etapa, responsável (ou ausência dele) e telefone |
+| `restoreLead` | SUPERVISOR (própria equipe), ADMIN | Recupera para o vendedor escolhido: novo ciclo `REWORK`, etapa `REWORK` |
+| `listDecisionQueue` | SUPERVISOR (própria equipe), ADMIN | Fila de decisão: leads sem responsável (`UNASSIGNED`) e com Follow-up 3 vencido (`FOLLOW_UP_3_EXPIRED`), calculada por `stage_due_at`, sem job |
+
+- **Telefone:** [`src/lib/phone.ts`](../src/lib/phone.ts) converte qualquer formato digitado ("(79) 99999-9999", "+55 79 99999-9999", "079 …") para o canônico (`5579999999999`) e formata para exibição. Guarda-se **só** o canônico: o formato digitado não carrega informação e uma segunda coluna poderia divergir. Um teste confere que a lista de DDDs do código é a mesma do `CHECK` do banco.
+- **Duplicidade:** `LeadAlreadyExistsError` informa só o responsável e a equipe (ou que aguarda redistribuição, ou a mensagem da Lixeira) e não dá acesso ao lead. Vale no cadastro e na edição do telefone (mensagens próprias de cada operação). A unicidade vem da constraint `leads_phone_unique`: cadastros ou edições simultâneos com o mesmo telefone resultam em um único lead com ele; a consulta prévia só melhora a mensagem.
+- **Vendedor desativado:** `setUserActive` deixa os leads em operação com `owner_id = NULL` (motivo `OWNER_DEACTIVATED`), na mesma equipe, mantendo etapa, prazo e ciclo, com um evento `UNASSIGNED` por lead. Reativar não os devolve. Um trigger em `users` garante que nenhuma desativação deixe lead em operação com vendedor inativo.
+- **Inativar equipe:** recusado enquanto a equipe tiver leads em operação (ativos e não fechados), inclusive os sem responsável. Leads na Lixeira ou fechados não impedem.
+- **Vendedor sem equipe:** `changeSellerTeam(…, { teamId: null })` é recusado enquanto houver leads em operação ("Este vendedor possui leads em aberto. Transfira os leads antes de removê-lo da equipe.").
+- **Concorrência:** as mutações travam a linha do lead (`SELECT … FOR UPDATE`); o trigger do lead trava a linha do vendedor (`FOR SHARE`), então desativação/troca de equipe e atribuição de lead não se cruzam.
+
 ## 4. Kanban (estados)
 
 As 9 colunas do Kanban misturam conceitos diferentes. Colocar todas num único enum permitiria estados impossíveis (ex.: lead na Lixeira com prazo de follow-up correndo). Modelo adotado, já com as decisões do cliente:
@@ -119,25 +142,27 @@ As 9 colunas do Kanban misturam conceitos diferentes. Colocar todas num único e
 | Conceito | Modelagem | Valores |
 |---|---|---|
 | **Etapa do funil** | `leads.stage` (enum) | `NEW` (Lead Cadastrado), `NO_ANSWER`, `FOLLOW_UP_1`, `FOLLOW_UP_2`, `FOLLOW_UP_3`, `NEGOTIATION`, `CLOSED` (Fechamento), **`REWORK` (Retrabalho)** |
-| **Situação do lead** | `leads.status` (enum) | `ACTIVE`, `TRASHED` (Lixeira), `WON` |
-| **Ciclo de atendimento** | `lead_cycles` + `leads.current_cycle_id` | `INITIAL` (ciclo 1) e `REWORK` (ciclos 2, 3…) |
+| **Situação do lead** | `leads.status` (enum) | `ACTIVE`, `TRASHED` (Lixeira). Fechado = etapa `CLOSED` (um status `WON` seria redundante) |
+| **Responsável** | `leads.owner_id` | vendedor, ou `NULL` = fila do supervisor da equipe `team_id` (vendedor desativado) |
+| **Ciclo de atendimento** | `lead_cycles`; ciclo atual = o ciclo **aberto** | `INITIAL` (ciclo 1) e `REWORK` (ciclos 2, 3…). Sem referência circular `leads → lead_cycles` |
 | **Vencimentos** | **derivados** de `stage_due_at < agora` | Follow-up vencido, "aguardando supervisor" (FU3 vencido) e negociação vencida são calculados, não gravados como estado. Sem cron e sem estado desatualizado |
 
-**Prazos:** "1 dia" = **24 horas corridas** (decisão do cliente). `stage_due_at = stage_entered_at + 24h` nos follow-ups; na negociação, `última atualização válida + 24h`. Tudo em `timestamptz`; os parâmetros ficam em `business-rules.ts` (`followUpDeadlineHours`, `negotiationDeadlineHours`).
+**Prazos:** "1 dia" = **24 horas corridas** (decisão do cliente). `stage_due_at = stage_entered_at + 24h` nos follow-ups; na negociação, `entrada ou última observação + 24h`. **Não Respondeu**, Lead Cadastrado e Retrabalho não têm prazo (o banco recusa prazo nessas etapas). A **transferência não reinicia** prazo. Tudo em `timestamptz`; os parâmetros ficam em `business-rules.ts` (`followUpDeadlineHours`, `negotiationDeadlineHours`).
 
 **Fluxo de retrabalho (decisão do cliente):**
 
 ```
 FU3 vencido -> volta para o Supervisor -> Lixeira (status = TRASHED)
                                        -> Redistribuir: escolhe novo vendedor
-                                            -> fecha o ciclo atual (end_reason = FOLLOW_UP_EXPIRED)
+                                            -> fecha o ciclo atual (end_reason = REDISTRIBUTED)
                                             -> abre ciclo N+1 (kind = REWORK) para o novo vendedor
                                             -> stage = REWORK (coluna visível no Kanban)
                                             -> vendedor move: REWORK -> FU1 -> FU2 -> FU3
 ```
 
 - **Retrabalho é etapa visível**, e o ciclo registra a tentativa. Cada `lead_event` aponta para o seu ciclo, então "FU1 do 1º atendimento" e "FU1 do retrabalho" ficam distinguíveis no histórico.
-- **Lixeira** é status, não etapa: preserva a etapa e o responsável em que o lead estava. A recuperação também abre um ciclo `REWORK` e coloca o lead em `REWORK` para o vendedor escolhido.
+- **Lixeira** é status, não etapa: encerra o ciclo (`TRASHED`) e preserva a etapa, o responsável (ou a ausência dele, se veio da fila) e o telefone. A recuperação abre um ciclo `REWORK` e coloca o lead em `REWORK` para o vendedor escolhido.
+- **Transferência × redistribuição:** transferir troca só o responsável (mesma etapa, prazo e ciclo); redistribuir é nova tentativa comercial (novo ciclo `REWORK`, etapa `REWORK`).
 - **Fechamento** só é alcançado criando uma venda, na mesma transação. Não pode ser movido "à mão".
 - **Bloqueio por negociação vencida**: um guard de backend (`assertSellerNotBlocked`) roda antes das mutações de lead do vendedor e verifica, via SQL, se existe `stage = NEGOTIATION AND stage_due_at < agora` para ele.
 
@@ -160,13 +185,13 @@ src/
   components/
     ui/                      # Botão, campos, card, badge, tabela, diálogo, toast...
     layout/                  # AppShell, navegação por perfil, menu do usuário
-  lib/                       # Utilitários puros (formatação, ActionState, cn)
+  lib/                       # Utilitários puros (formatação, dinheiro, telefone, ActionState, cn)
   server/
     auth/                    # Senha, sessão, login, rate limit
     authz/                   # Actor, matriz RBAC, escopo
     config/business-rules.ts # Parâmetros de negócio centralizados
     db/                      # Schema, conexão (Postgres/PGlite), tipos, erros
-    modules/<domínio>/       # Serviços: users, teams, audit (+ leads, sales... nas fases)
+    modules/<domínio>/       # Serviços: users, teams, audit, courses, leads (+ sales... nas fases)
     next/                    # Ponte Next.js ↔ serviços (sessão, runAction, orNotFound)
   proxy.ts                   # Redirect otimista para /login
 database/migrations/         # SQLs executados manualmente no Supabase (fonte do schema)
@@ -183,10 +208,10 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 |---|---|---|
 | **0. Fundação** ✅ | Projeto, banco, migrations, auth, papéis, equipes, RBAC/escopo, auditoria, layout | §3, §4, §25 |
 | **1. Cursos** ✅ | Cadastro de cursos, `course_costs` restrito ao admin, lista operacional sem custo | §10, §13 |
-| 2. Leads | Cadastro, normalização e unicidade de telefone, transferência com histórico, `lead_events`/`lead_notes` | §5, §19 |
-| 3. Kanban + Follow-up | Etapas, movimentação manual, prazos, vencidos, fila do supervisor | §6, §7 |
+| **2. Leads** ✅ (serviços) | Cadastro, normalização e unicidade de telefone, transferência com histórico, `lead_events`/`lead_notes`, fila do supervisor; também o backend de redistribuição, Lixeira e recuperação (fase 5). Telas: pendentes | §5, §9, §19 |
+| 3. Kanban + Follow-up | Movimentação manual de etapas, prazos e vencidos no Kanban visual | §6, §7 |
 | 4. Negociação | Observações, vencimento, bloqueio do vendedor | §8 |
-| 5. Retrabalho + Lixeira | Redistribuição, lixeira, recuperação, novo ciclo | §9 |
+| 5. Retrabalho + Lixeira | Telas (backend pronto na fase 2) | §9 |
 | 6. Vendas | Venda + itens + comissão + custo/lucro (admin) | §11, §13, §14 |
 | 7. Pagamentos e parcelas | Pix/cartão, geração e baixa de parcelas | §12 |
 | 8. Estorno | Cancelamento com motivo, área de estornos | §15 |
@@ -206,16 +231,28 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 | C2 | **"1 dia" = 24 horas corridas** desde a entrada na etapa ou a última atualização válida | `business-rules.ts`, §4 |
 | C3 | **Retrabalho é etapa visível do Kanban**, e o histórico distingue os ciclos de follow-up | `stage = REWORK` + `lead_cycles`, §4 |
 | C4 | **Vendedor que muda de equipe leva os leads em aberto**; vendas e eventos passados ficam com a equipe da época | §3 "Equipe da época × equipe atual"; auditoria da troca com retrato de origem e destino (implementado) |
-| C5 | **Supervisor não tem carteira comercial.** Só o SELLER tem leads, vendas, follow-ups, negociações e comissões | `leads:create` e `sales:create` = `SELLER`; na fase Leads, um trigger garante que `leads.owner_id` seja sempre um SELLER |
+| C5 | **Supervisor não tem carteira comercial.** Só o SELLER tem leads, vendas, follow-ups, negociações e comissões | `leads:create` e `sales:create` = `SELLER`; trigger garante que `leads.owner_id` seja sempre um SELLER ✅ |
 | C6 | **Parcelas**: só a estrutura (número, valor, vencimento, status, data de pagamento). Regras de geração ficam para a fase financeira | §3 |
 | C7 | **ADMIN opera leads globalmente**: transfere, redistribui, manda para a Lixeira, recupera e escolhe o novo vendedor. A restrição de estorno (C1) vale só para Vendas | `leads:transfer/redistribute/trash/restore` incluem ADMIN |
-| C8 | **Telefone**: só números brasileiros, DDD obrigatório, celular com 9º dígito. Qualquer formato de entrada vira um telefone canônico único (`(79) 99999-9999` = `+55 79 99999-9999`), com unicidade garantida no PostgreSQL | Fase Leads: normalização no backend + `UNIQUE` no banco |
-| C9 | **Duplicado ativo**: bloquear e informar só que já existe, o nome do responsável e a equipe. Nada de histórico, observações ou outros dados | Fase Leads |
-| C10 | **Duplicado na Lixeira**: bloquear; o lead é o MESMO registro. Mensagem: "Este lead já está cadastrado e encontra-se na Lixeira. Solicite ao supervisor ou administrador a recuperação." | Fase Leads |
-| C11 | **Transferência**: SUPERVISOR só entre vendedores da própria equipe; ADMIN entre quaisquer equipes/vendedores. Tudo com histórico | Fase Leads |
-| C12 | **Vendedor desativado** com leads abertos: nada é redistribuído automaticamente; os leads vão para a fila de redistribuição do supervisor. Histórico guarda vendedor anterior, equipe, supervisor, momento da desativação e o novo responsável. Mudança de equipe (sem desativação): os leads acompanham o vendedor (C4) | Fase Leads |
+| C8 | **Telefone**: só números brasileiros, DDD obrigatório, celular com 9º dígito. Qualquer formato de entrada vira um telefone canônico único (`(79) 99999-9999` = `+55 79 99999-9999`), com unicidade garantida no PostgreSQL ✅ `src/lib/phone.ts` + `leads_phone_unique` + `CHECK leads_phone_canonical` |
+| C9 | **Duplicado ativo**: bloquear e informar só que já existe, o nome do responsável e a equipe. Nada de histórico, observações ou outros dados. Vale também ao editar o telefone | ✅ `LeadAlreadyExistsError` |
+| C10 | **Duplicado na Lixeira**: bloquear; o lead é o MESMO registro. Mensagem: "Este lead já está cadastrado e encontra-se na Lixeira. Solicite ao supervisor ou administrador a recuperação." | ✅ `LeadAlreadyExistsError` |
+| C11 | **Transferência**: SUPERVISOR só entre vendedores da própria equipe; ADMIN entre quaisquer equipes/vendedores. Tudo com histórico | ✅ `transferLead` |
+| C12 | **Vendedor desativado** com leads abertos: nada é redistribuído automaticamente; os leads ficam **sem responsável** (`owner_id = NULL`), na equipe anterior, aguardando o supervisor. **Não** entram em Retrabalho. Histórico guarda vendedor anterior, equipe, supervisor, momento e motivo; a atribuição de outro vendedor é uma **transferência administrativa** (mantém etapa e ciclo). Mudança de equipe (sem desativação): os leads acompanham o vendedor (C4) | ✅ `unassignOpenLeadsOfSeller`, `transferLead` |
 | C13 | **Curso por instituição**: o mesmo curso pode existir em instituições diferentes, com custos diferentes; unicidade = curso + instituição (`institution_name`, texto) | ✅ `courses.institution_name` + `courses_name_institution_unique` |
 | C14 | **Banco oficial: Supabase** (só Postgres, sem Supabase Auth). Schema alterado apenas por SQLs manuais em `database/migrations` | [database/README.md](../database/README.md) |
+| C15 | **Curso de interesse obrigatório**, um curso principal por lead. Não limita Vendas: a venda poderá ter vários cursos (itens) | `leads.interest_course_id NOT NULL` |
+| C16 | **Telefone**: celular e fixo brasileiros válidos; guarda-se só o canônico em dígitos, formatado na interface; `UNIQUE(phone)` vale inclusive na Lixeira | `leads.phone`, §3 |
+| C17 | **Transferência** = troca administrativa de responsável: mantém etapa, entrada na etapa, prazo e ciclo; não reinicia prazo. **Redistribuição** = nova tentativa comercial: novo vendedor, novo ciclo, etapa Retrabalho; usada após Follow-up 3 vencido e na recuperação da Lixeira | `transferLead`, `redistributeLead`, `restoreLead` |
+| C18 | **Vendedor removido da equipe** (sem equipe) com leads abertos: a operação é recusada ("Este vendedor possui leads em aberto. Transfira os leads antes de removê-lo da equipe."). A desativação continua permitida (C12) | `changeSellerTeam` |
+| C19 | **Lead da fila (vendedor desativado) pode ir para a Lixeira** pelo SUPERVISOR ou ADMIN sem atribuir vendedor antes | `trashLead` |
+| C20 | **Não Respondeu** é manual e sem prazo. **Em Negociação**: prazo = entrada ou última observação + 24 h | `CHECK leads_stage_due_consistent`, `addLeadNote` |
+| C21 | **Edição de lead**: nome, telefone e curso de interesse. SELLER edita os próprios; SUPERVISOR, os da equipe; ADMIN, todos. Lead na Lixeira não é editado. Mesmo telefone canônico e mesma regra de duplicidade do cadastro; curso ativo; evento `DETAILS_UPDATED` só com o que mudou | `editLead` |
+| C22 | **Inativar equipe** só sem leads ativos (com ou sem responsável). Lixeira e leads encerrados não impedem | `updateTeam` |
+| C23 | O **SELLER não vê os próprios leads na Lixeira** | `leadScope` em `leads.service.ts` |
+| C24 | **Observações operacionais** só pelo SELLER responsável | `leads:addNote` = `SELLER` |
+| C25 | **Redistribuição** só com Follow-up 3 vencido ou na recuperação da Lixeira; qualquer outra troca de responsável é transferência | `redistributeLead`, `restoreLead`, `transferLead` |
+| C26 | Lead em **Fechamento** não é transferido nem enviado para a Lixeira | `transferLead`, `trashLead` |
 
 ### Decisões técnicas
 
@@ -223,13 +260,13 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 - **Sessão**: 12 h (`SESSION_TTL_HOURS`), sem renovação deslizante.
 - **Login**: mensagem genérica, tempo constante para e-mail inexistente, limite de 10 tentativas a cada 15 min por e-mail+IP (em memória; com múltiplas instâncias, mover para o Postgres).
 - **Papel do usuário é imutável** depois de criado (trigger). Trocar papel tem efeitos em equipes, leads e vendas que ainda não foram definidos.
-- **Desativar supervisor** exige antes definir outro supervisor para a equipe que ele lidera. **Inativar equipe** exige que ela não tenha vendedores ativos.
+- **Desativar supervisor** exige antes definir outro supervisor para a equipe que ele lidera. **Inativar equipe** exige que ela não tenha vendedores ativos nem leads em operação (C22).
 - **Primeiro administrador**: `npm run admin:create` (interativo, senha sem eco, nunca por argumento/arquivo/pipe). Usa o mesmo `hashPassword` e as mesmas validações da aplicação; recusa se já existir ADMIN ou se o e-mail já existir. O usuário e o evento `auth.admin_bootstrapped` (`actor_id = NULL`, metadata `{ source: "admin:create" }`) são gravados na mesma transação, sob um advisory lock contra execuções simultâneas.
 - **Acesso negado em páginas** responde **404** (não revela existência). Não há `loading.tsx` envolvendo páginas com checagem de acesso, para que o status HTTP seja real.
 
 ## 9. Dúvidas em aberto
 
-Resolvidas pelo cliente: C1–C14 (§8). As linhas abaixo mantêm a numeração original; as resolvidas foram removidas. Pendentes:
+Resolvidas pelo cliente: C1–C26 (§8). As linhas abaixo mantêm a numeração original; as resolvidas foram removidas. Pendentes:
 
 | # | Dúvida | Contexto | Padrão atual | Fase |
 |---|---|---|---|---|
@@ -240,8 +277,8 @@ Resolvidas pelo cliente: C1–C14 (§8). As linhas abaixo mantêm a numeração 
 | 6 | **"Por curso/aluno"**: uma venda pode ter cursos de **alunos diferentes**? | §14 e RA-03 | Item = curso; aluno = lead da venda | Vendas |
 | 7 | **Custo de bolsa alterado**: vendas antigas mantêm o custo da época? | §26 | Proposta: sim (snapshot em `sale_items`) | Vendas |
 | 8 | **Negociação vencida bloqueia o quê exatamente?** | §8: "cadastrar novos leads ou movimentar outras frentes do Kanban" | Proposta: bloquear criação de lead e movimentação de outros leads; parcelas e certificados liberados | Negociação |
-| 9 | **FU3 vencido**: o lead continua com o mesmo responsável (só some da fila dele) até o supervisor decidir? | §7 | Proposta: mantém o responsável, marcado como "aguardando supervisor" | Kanban |
+| 9 | **FU3 vencido**: o lead continua com o mesmo responsável (só some da fila dele) até o supervisor decidir? | §7 | Implementado: mantém o responsável e aparece na fila do supervisor; como o Kanban do vendedor o exibe fica para a fase Kanban | Kanban |
 | 10 | Campos adicionais do lead (e-mail, CPF, cidade)? | §26 | Só os campos mínimos | Leads |
 | 11 | Formato e colunas de cada relatório | §26 | — | Relatórios |
-| 16 | **Curso de interesse** no cadastro: obrigatório? Um ou vários? | §5.1: "quando aplicável" | Proposta: opcional, vários, só cursos ativos | Leads |
-| 17 | **Data de cadastro do lead**: sempre a hora do servidor, ou o vendedor pode informar uma data retroativa? | §5.1 | Proposta: hora do servidor, imutável | Leads |
+| 17 | **Data de cadastro do lead**: sempre a hora do servidor, ou o vendedor pode informar uma data retroativa? | §5.1 | Implementado: hora do servidor (`created_at`), imutável | Leads |
+

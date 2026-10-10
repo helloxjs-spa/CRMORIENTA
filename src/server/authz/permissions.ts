@@ -23,7 +23,13 @@ const MATRIX = {
   "audit:view": ["ADMIN"],
 
   // Comercial (fases seguintes; declarado aqui para manter a matriz única)
+  /** Ver leads: sempre combinado com o escopo (próprios / equipe / todos). */
+  "leads:view": ["ADMIN", "SUPERVISOR", "SELLER"],
   "leads:create": ["SELLER"],
+  /** Editar nome, telefone e curso de interesse: sempre combinado com o escopo. */
+  "leads:edit": ["ADMIN", "SUPERVISOR", "SELLER"],
+  /** Observações: quem opera o lead (o vendedor responsável). */
+  "leads:addNote": ["SELLER"],
   "leads:transfer": ["ADMIN", "SUPERVISOR"],
   "leads:redistribute": ["ADMIN", "SUPERVISOR"],
   "leads:trash": ["ADMIN", "SUPERVISOR"],

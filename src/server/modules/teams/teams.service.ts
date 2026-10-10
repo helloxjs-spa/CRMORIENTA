@@ -9,6 +9,7 @@ import { teams, users } from "@/server/db/schema";
 import type { Database } from "@/server/db/types";
 import { ConflictError, NotFoundError, ValidationError } from "@/server/errors";
 import { recordAudit } from "@/server/modules/audit/audit.service";
+import { countOpenLeadsOfTeam } from "@/server/modules/leads/leads.internal";
 import { idSchema, parseInput } from "@/server/validation";
 
 const supervisor = alias(users, "supervisor");
@@ -34,6 +35,12 @@ export type TeamView = {
 export type TeamListItem = TeamView & { sellerCount: number };
 
 export type TeamMember = { id: string; name: string; email: string; active: boolean };
+
+export function teamHasOpenLeadsMessage(total: number): string {
+  return total === 1
+    ? "A equipe possui 1 lead ativo. Transfira ou resolva o lead antes de inativá-la."
+    : `A equipe possui ${total} leads ativos. Transfira ou resolva os leads antes de inativá-la.`;
+}
 
 const NAME_TAKEN = "Já existe uma equipe com este nome.";
 const SUPERVISOR_TAKEN = "Este supervisor já lidera outra equipe.";
@@ -184,6 +191,9 @@ export async function updateTeam({ db, actor }: ServiceContext, rawId: unknown, 
         if (total > 0) {
           throw new ConflictError("A equipe possui vendedores ativos. Mova-os para outra equipe antes de inativá-la.");
         }
+        // Inclui leads sem responsável (fila do supervisor). Lixeira e fechados não impedem.
+        const openLeads = await countOpenLeadsOfTeam(tx, id);
+        if (openLeads > 0) throw new ConflictError(teamHasOpenLeadsMessage(openLeads));
       }
 
       await tx.update(teams).set({ name: data.name, active: data.active }).where(eq(teams.id, id));

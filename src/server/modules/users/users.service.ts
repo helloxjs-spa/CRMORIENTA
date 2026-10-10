@@ -10,6 +10,11 @@ import { teams, USER_ROLES, users, type UserRole } from "@/server/db/schema";
 import type { Database } from "@/server/db/types";
 import { ConflictError, NotFoundError, ValidationError } from "@/server/errors";
 import { recordAudit } from "@/server/modules/audit/audit.service";
+import {
+  countOpenLeadsOfSeller,
+  moveOpenLeadsWithSeller,
+  unassignOpenLeadsOfSeller,
+} from "@/server/modules/leads/leads.internal";
 import { emailSchema, idSchema, nameSchema, parseInput, passwordSchema } from "@/server/validation";
 
 /**
@@ -220,12 +225,16 @@ export async function setUserActive(
 
     await tx.update(users).set({ active }).where(eq(users.id, id));
     if (!active) await revokeAllUserSessions(tx, id);
+    // Vendedor desativado: os leads em operação ficam sem responsável, na fila
+    // do supervisor da mesma equipe (sem Retrabalho). Reativar não os devolve.
+    const unassignedLeads = !active && user.role === "SELLER" ? await unassignOpenLeadsOfSeller(tx, actor.userId, id) : 0;
     await recordAudit(tx, {
       actorId: actor.userId,
       action: active ? "user.activated" : "user.deactivated",
       entityType: "user",
       entityId: id,
       teamId: user.teamId,
+      metadata: unassignedLeads > 0 ? { unassignedLeads } : undefined,
     });
   });
 }
@@ -254,10 +263,13 @@ export async function resetUserPassword({ db, actor }: ServiceContext, rawId: un
 
 const changeTeamSchema = z.strictObject({ teamId: idSchema.nullable() });
 
+export const SELLER_HAS_OPEN_LEADS =
+  "Este vendedor possui leads em aberto. Transfira os leads antes de removê-lo da equipe.";
+
 /**
  * Move um vendedor para outra equipe (ou o deixa sem equipe). Apenas ADMIN.
- * Obs.: o efeito sobre os leads em aberto do vendedor será definido na fase de
- * Leads (ver docs/ARQUITETURA.md, Dúvidas).
+ * Os leads em operação do vendedor o acompanham para a nova equipe (decisão
+ * C4). Deixá-lo sem equipe é recusado enquanto houver leads em operação.
  */
 export async function changeSellerTeam(
   { db, actor }: ServiceContext,
@@ -274,6 +286,7 @@ export async function changeSellerTeam(
     if (seller.role !== "SELLER") throw new ValidationError("Apenas vendedores podem ser movidos entre equipes.");
     if (seller.teamId === teamId) return;
     if (teamId) await assertActiveTeam(tx, teamId);
+    if (!teamId && (await countOpenLeadsOfSeller(tx, sellerId)) > 0) throw new ConflictError(SELLER_HAS_OPEN_LEADS);
 
     // Retrato de origem e destino no momento da mudança (equipe e supervisor),
     // para que o histórico continue legível mesmo após renomeações ou trocas
@@ -281,16 +294,16 @@ export async function changeSellerTeam(
     const [from, to] = await Promise.all([teamSnapshot(tx, seller.teamId), teamSnapshot(tx, teamId)]);
 
     await tx.update(users).set({ teamId }).where(eq(users.id, sellerId));
+    const movedLeads =
+      seller.teamId && teamId ? await moveOpenLeadsWithSeller(tx, actor.userId, sellerId, seller.teamId, teamId) : 0;
     await recordAudit(tx, {
       actorId: actor.userId,
       action: "user.team_changed",
       entityType: "user",
       entityId: sellerId,
       teamId,
-      metadata: { fromTeamId: seller.teamId, toTeamId: teamId, from, to },
+      metadata: { fromTeamId: seller.teamId, toTeamId: teamId, from, to, movedLeads },
     });
-    // Fase Leads: nesta mesma transação, os leads em aberto do vendedor passam
-    // para a nova equipe, com um lead_event TEAM_CHANGED por lead.
   });
 }
 

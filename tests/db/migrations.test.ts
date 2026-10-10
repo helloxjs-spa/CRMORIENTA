@@ -1,7 +1,7 @@
 import { eq, is, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DatabaseHandle } from "@/server/db/connect";
-import { getTableConfig, PgTable } from "drizzle-orm/pg-core";
+import { getTableConfig, isPgEnum, PgTable } from "drizzle-orm/pg-core";
 import * as schema from "@/server/db/schema";
 import { auditEvents, teams, users } from "@/server/db/schema";
 import { recordAudit } from "@/server/modules/audit/audit.service";
@@ -29,12 +29,23 @@ describe("migrations (database/migrations, os mesmos SQLs executados no Supabase
     const tables = await rows<{ table_name: string }>(
       sql`select table_name from information_schema.tables where table_schema = 'public' order by table_name`,
     );
-    expect(tables.map((r) => r.table_name)).toEqual(["audit_events", "course_costs", "courses", "sessions", "teams", "users"]);
+    expect(tables.map((r) => r.table_name)).toEqual([
+      "audit_events",
+      "course_costs",
+      "courses",
+      "lead_cycles",
+      "lead_events",
+      "lead_notes",
+      "leads",
+      "sessions",
+      "teams",
+      "users",
+    ]);
   });
 
   it("o schema Drizzle tem exatamente as mesmas colunas que o banco", async () => {
     const tables = Object.values(schema).flatMap((value) => (is(value, PgTable) ? [value] : []));
-    expect(tables.length).toBe(6);
+    expect(tables.length).toBe(10);
     for (const table of tables) {
       const config = getTableConfig(table);
       const dbColumns = await rows<{ column_name: string }>(
@@ -44,11 +55,23 @@ describe("migrations (database/migrations, os mesmos SQLs executados no Supabase
     }
   });
 
+  it("os enums do Drizzle têm os mesmos valores, na mesma ordem, que os do banco", async () => {
+    const enums = Object.values(schema).flatMap((value) => (isPgEnum(value) ? [value] : []));
+    expect(enums.length).toBe(7);
+    for (const pgEnum of enums) {
+      const dbValues = await rows<{ enumlabel: string }>(
+        sql`select e.enumlabel from pg_enum e join pg_type t on t.oid = e.enumtypid
+            where t.typname = ${pgEnum.enumName} order by e.enumsortorder`,
+      );
+      expect(dbValues.map((v) => v.enumlabel), pgEnum.enumName).toEqual([...pgEnum.enumValues]);
+    }
+  });
+
   it("Data API do Supabase bloqueada: RLS ligado e sem acesso para anon/authenticated", async () => {
     const rls = await rows<{ relname: string; relrowsecurity: boolean }>(
       sql`select relname, relrowsecurity from pg_class where relnamespace = 'public'::regnamespace and relkind = 'r'`,
     );
-    expect(rls.length).toBe(6);
+    expect(rls.length).toBe(10);
     for (const table of rls) expect(table.relrowsecurity, table.relname).toBe(true);
 
     const grants = await rows<{ grantee: string }>(

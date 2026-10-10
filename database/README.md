@@ -30,6 +30,7 @@ Regras:
 | Arquivo | Conteúdo | Executado no Supabase |
 |---|---|---|
 | [`001_supabase_initial_schema.sql`](migrations/001_supabase_initial_schema.sql) | Fundação (users, teams, sessions, audit_events), cursos e custos, com `institution_name` | ✅ 2026-10-08 |
+| [`002_leads.sql`](migrations/002_leads.sql) | Leads: `leads`, `lead_cycles`, `lead_notes`, `lead_events`, 6 enums, telefone canônico único (inclusive na Lixeira), triggers de integridade (responsável SELLER ativo da mesma equipe, coerência lead × ciclos, append-only, sem DELETE/TRUNCATE) e o trigger `users_seller_open_leads` em `users` | ✅ 2026-10-10 |
 
 ## Testes e banco local
 
