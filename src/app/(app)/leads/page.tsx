@@ -18,6 +18,7 @@ import { NewLeadDialog } from "./lead-dialogs";
 import { LeadsResults, LeadsResultsSkeleton, type Viewer } from "./leads-results";
 import { LeadsToolbar, type ToolbarOptions } from "./leads-toolbar";
 import { NegotiationBanner } from "./negotiation-banner";
+import { leadCreationMode } from "./policy";
 import { leadsHref, parseLeadsParams, type LeadsParams, type QueueFilter } from "./search-params";
 
 export const metadata: Metadata = { title: "Leads" };
@@ -32,6 +33,7 @@ export default async function LeadsPage({ searchParams }: PageProps<"/leads">) {
   const canManage = hasPermission(actor, "leads:transfer");
   const isAdmin = actor.role === "ADMIN";
   const canCreate = hasPermission(actor, "leads:create");
+  const creation = leadCreationMode(actor);
 
   const raw = parseLeadsParams(await searchParams);
   // Quem não opera a equipe (SELLER) fica sempre na própria carteira.
@@ -62,12 +64,20 @@ export default async function LeadsPage({ searchParams }: PageProps<"/leads">) {
       <PageHeader
         title="Leads"
         description="Gerencie sua carteira e acompanhe o andamento dos contatos."
-        actions={canCreate && actor.teamId ? <NewLeadDialog courses={courses.filter((c) => c.active)} /> : undefined}
+        actions={
+          creation ? (
+            <NewLeadDialog
+              courses={courses.filter((c) => c.active)}
+              sellers={creation === "chooseSeller" ? sellers.filter((s) => s.active && s.teamId) : undefined}
+              groupByTeam={isAdmin}
+            />
+          ) : undefined
+        }
       />
 
       <NegotiationBanner block={block} openHref={(id) => leadsHref(params, { lead: id })} />
 
-      {canCreate && !actor.teamId && (
+      {canCreate && actor.role === "SELLER" && !actor.teamId && (
         <Card className="mb-4 px-4 py-3 text-sm text-amber-800 ring-amber-200">
           Você não está vinculado a uma equipe, por isso ainda não pode cadastrar leads. Procure o administrador.
         </Card>

@@ -1,0 +1,4 @@
+# Migrations SQL já executadas no Supabase: o Git guarda e devolve os bytes
+# EXATOS (sem converter CRLF/LF), para que o SHA-256 de cada arquivo continue
+# igual ao do script executado, em qualquer sistema operacional.
+database/migrations/*.sql -text

@@ -66,6 +66,23 @@ describe("cadastro e edição pela action", () => {
     expect(created).toMatchObject({ ownerId: org.ids.sellerA2, teamId: org.ids.teamA, stage: "NEW" });
   });
 
+  it("supervisor cadastra pela action para vendedor da equipe (C41); fora da equipe volta erro no campo", async () => {
+    await as(org.ids.supA);
+    const ok = await actions.createLeadAction(
+      IDLE,
+      form({ name: "Pelo Supervisor", phone: "79 98000-0010", interestCourseId: courseId, sellerId: org.ids.sellerA1, ownerId: org.ids.sellerB1, teamId: org.ids.teamB }),
+    );
+    expect(ok).toMatchObject({ status: "success", message: "Lead cadastrado." });
+    const [created] = await handle.db.select().from(leads).where(eq(leads.phone, "5579980000010"));
+    expect(created).toMatchObject({ ownerId: org.ids.sellerA1, teamId: org.ids.teamA, createdBy: org.ids.supA });
+
+    const outside = await actions.createLeadAction(IDLE, form({ name: "Outra Equipe", phone: "79 98000-0011", interestCourseId: courseId, sellerId: org.ids.sellerB1 }));
+    expect(outside).toMatchObject({ status: "error", fieldErrors: { sellerId: ["Selecione um vendedor ativo da sua equipe."] } });
+    const missing = await actions.createLeadAction(IDLE, form({ name: "Sem Vendedor", phone: "79 98000-0012", interestCourseId: courseId }));
+    expect(missing).toMatchObject({ status: "error", fieldErrors: { sellerId: ["Selecione o vendedor responsável pelo lead."] } });
+    expect(await handle.db.select().from(leads).where(eq(leads.phone, "5579980000011"))).toEqual([]);
+  });
+
   it("telefone duplicado ativo volta como erro de negócio com responsável e equipe (não erro genérico)", async () => {
     await as(org.ids.sellerB1);
     const result = await actions.createLeadAction(IDLE, form({ name: "Repetido", phone: "(79) 98000-0001", interestCourseId: courseId }));

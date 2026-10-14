@@ -4,17 +4,22 @@ import {
   CircleDot,
   MessageSquareText,
   PencilLine,
+  Redo2,
   RotateCcw,
+  ShoppingCart,
   Trash2,
+  Undo2,
+  UserCog,
   UserPlus,
   UserX,
   Users,
   type LucideIcon,
 } from "lucide-react";
+import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { formatRelativeDateTime } from "@/lib/format";
 import { describeLeadEvent } from "@/lib/lead-timeline";
-import type { LeadEventType } from "@/server/db/schema";
+import type { LeadCycleKind, LeadEventType } from "@/server/db/schema";
 import type { LeadTimelineEntry } from "@/server/modules/leads/leads.service";
 
 const ICONS: Record<LeadEventType, { icon: LucideIcon; className: string }> = {
@@ -28,6 +33,16 @@ const ICONS: Record<LeadEventType, { icon: LucideIcon; className: string }> = {
   TRASHED: { icon: Trash2, className: "bg-red-50 text-red-600 ring-red-200" },
   RESTORED: { icon: ArchiveRestore, className: "bg-emerald-50 text-emerald-700 ring-emerald-200" },
   NOTE_ADDED: { icon: MessageSquareText, className: "bg-slate-100 text-slate-600 ring-slate-200" },
+  SALE_CREATED: { icon: ShoppingCart, className: "bg-emerald-50 text-emerald-700 ring-emerald-200" },
+  SALE_REVERSED: { icon: Undo2, className: "bg-red-50 text-red-600 ring-red-200" },
+  SALE_REACTIVATED: { icon: Redo2, className: "bg-emerald-50 text-emerald-700 ring-emerald-200" },
+  SALE_SELLER_CHANGED: { icon: UserCog, className: "bg-sky-50 text-sky-700 ring-sky-200" },
+};
+
+const CYCLE_KIND_LABELS: Record<LeadCycleKind, string> = {
+  INITIAL: "Atendimento inicial",
+  REWORK: "Retrabalho",
+  REOPENED: "Reaberto após estorno",
 };
 
 /**
@@ -35,7 +50,16 @@ const ICONS: Record<LeadEventType, { icon: LucideIcon; className: string }> = {
  * por ciclo de atendimento: o 1º atendimento e cada Retrabalho ficam
  * separados. Mais recente primeiro.
  */
-export function LeadTimeline({ events, now }: { events: LeadTimelineEntry[]; now: Date }) {
+export function LeadTimeline({
+  events,
+  now,
+  visibleSaleIds = new Set(),
+}: {
+  events: LeadTimelineEntry[];
+  now: Date;
+  /** Vendas que o ator pode abrir (link "Ver venda" só para elas). */
+  visibleSaleIds?: ReadonlySet<string>;
+}) {
   if (events.length === 0) return <p className="text-sm text-slate-500">Nenhum evento registrado.</p>;
 
   const cycles = new Map<number, { kind: LeadTimelineEntry["cycleKind"]; events: LeadTimelineEntry[] }>();
@@ -52,7 +76,7 @@ export function LeadTimeline({ events, now }: { events: LeadTimelineEntry[]; now
         <section key={number} aria-label={`Ciclo ${number}`}>
           {showCycles && (
             <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              Ciclo {number} · {cycle.kind === "INITIAL" ? "Atendimento inicial" : "Retrabalho"}
+              Ciclo {number} · {CYCLE_KIND_LABELS[cycle.kind]}
             </h4>
           )}
           <ol className="relative space-y-4 before:absolute before:inset-y-1 before:left-[15px] before:w-px before:bg-slate-200">
@@ -76,6 +100,11 @@ export function LeadTimeline({ events, now }: { events: LeadTimelineEntry[]; now
                         {line}
                       </p>
                     ))}
+                    {event.saleId && visibleSaleIds.has(event.saleId) && (
+                      <Link href={`/vendas/${event.saleId}`} className="mt-0.5 inline-block text-sm font-medium text-brand-700 hover:underline">
+                        Ver venda
+                      </Link>
+                    )}
                     <p className="mt-1 text-xs text-slate-500">
                       {event.actorName} • <time dateTime={event.occurredAt.toISOString()}>{formatRelativeDateTime(event.occurredAt, now)}</time>
                     </p>

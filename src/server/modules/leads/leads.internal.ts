@@ -1,6 +1,8 @@
-import { and, count, eq, inArray, isNull, ne, sql } from "drizzle-orm";
-import { leadCycles, leadEvents, leads, teams, type LeadEventType, type LeadStage, type LeadUnassignedReason } from "@/server/db/schema";
+import { and, asc, count, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import type { Actor } from "@/server/authz/actor";
+import { leadCycles, leadEvents, leads, teams, users, type LeadEventType, type LeadStage, type LeadUnassignedReason } from "@/server/db/schema";
 import type { Database } from "@/server/db/types";
+import { NotFoundError, UnauthenticatedError } from "@/server/errors";
 
 /**
  * Peças internas do módulo de Leads, usadas pelo serviço de leads e pelo
@@ -24,8 +26,67 @@ export type LeadEventInput = {
   fromSupervisorId?: string | null;
   unassignedReason?: LeadUnassignedReason | null;
   noteId?: string | null;
+  /** Venda do mesmo lead: obrigatória nos eventos SALE_* (e só neles). */
+  saleId?: string | null;
   metadata?: Record<string, unknown>;
 };
+
+/**
+ * Primeira etapa das travas de uma mutação comercial: usuários envolvidos
+ * (o ator e os informados), FOR SHARE, em ordem de id — o ORDER BY faz o
+ * PostgreSQL travar as linhas nessa ordem. Ordem global: usuários → equipe →
+ * lead → venda, a mesma dos triggers do 003 e de users.service (que altera o
+ * vendedor antes dos leads dele). Enquanto a transação durar, nenhum desses
+ * usuários é desativado nem muda de equipe.
+ *
+ * Revalida o ator com as travas tomadas (o Actor foi carregado no início da
+ * requisição): desativado → sessão encerrada; SUPERVISOR que não lidera mais a
+ * equipe do escopo → fora do escopo. A equipe liderada também fica travada
+ * (FOR SHARE), então a troca de supervisor espera esta transação.
+ */
+export async function lockUsersForChange(
+  db: Database,
+  actor: Actor,
+  userIds: (string | null | undefined)[],
+): Promise<Map<string, { active: boolean; teamId: string | null }>> {
+  const ids = [...new Set([actor.userId, ...userIds.filter((id): id is string => !!id)])];
+  const locked = await db
+    .select({ id: users.id, active: users.active, teamId: users.teamId })
+    .from(users)
+    .where(inArray(users.id, ids))
+    .orderBy(asc(users.id))
+    .for("share");
+
+  if (!locked.find((u) => u.id === actor.userId)?.active) throw new UnauthenticatedError();
+  if (actor.role === "SUPERVISOR") {
+    const [led] = await db.select({ id: teams.id }).from(teams).where(eq(teams.supervisorId, actor.userId)).limit(1).for("share");
+    if ((led?.id ?? null) !== actor.supervisedTeamId) throw new NotFoundError();
+  }
+  return new Map(locked.map((u) => [u.id, { active: u.active, teamId: u.teamId }]));
+}
+
+/**
+ * Segunda etapa das travas (depois dos usuários, antes dos leads): equipes
+ * envolvidas, FOR SHARE, em ordem de id. Enquanto a transação durar, a equipe
+ * não é desativada (updateTeam) nem troca de supervisor (setTeamSupervisor),
+ * então o supervisor lido para os eventos é o vigente até o COMMIT ("retrato
+ * depois do fato") e nenhuma desativação concorrente deixa de enxergar o que
+ * esta transação grava na equipe.
+ */
+export async function lockTeamsForShare(
+  db: Database,
+  teamIds: (string | null | undefined)[],
+): Promise<Map<string, { active: boolean; supervisorId: string | null }>> {
+  const ids = [...new Set(teamIds.filter((id): id is string => !!id))];
+  if (ids.length === 0) return new Map();
+  const locked = await db
+    .select({ id: teams.id, active: teams.active, supervisorId: teams.supervisorId })
+    .from(teams)
+    .where(inArray(teams.id, ids))
+    .orderBy(asc(teams.id))
+    .for("share");
+  return new Map(locked.map((t) => [t.id, { active: t.active, supervisorId: t.supervisorId }]));
+}
 
 /** Grava eventos na linha do tempo do lead (append-only). */
 export async function recordLeadEvents(db: Database, events: LeadEventInput[]): Promise<void> {
@@ -46,12 +107,16 @@ export async function recordLeadEvents(db: Database, events: LeadEventInput[]): 
       fromSupervisorId: e.fromSupervisorId ?? null,
       unassignedReason: e.unassignedReason ?? null,
       noteId: e.noteId ?? null,
+      saleId: e.saleId ?? null,
       metadata: e.metadata ?? {},
     })),
   );
 }
 
-/** Supervisor atual da equipe (retrato gravado nos eventos). */
+/**
+ * Supervisor atual da equipe (retrato gravado nos eventos). Chame com a
+ * equipe já travada (lockTeamsForShare), para o valor valer até o COMMIT.
+ */
 export async function supervisorOf(db: Database, teamId: string): Promise<string | null> {
   const [team] = await db.select({ supervisorId: teams.supervisorId }).from(teams).where(eq(teams.id, teamId)).limit(1);
   return team?.supervisorId ?? null;

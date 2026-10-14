@@ -78,12 +78,38 @@ Valores monetários sempre em **centavos (integer)**. Datas em `timestamptz` (UT
 
 Relação **Empresa → Supervisor → Vendedores**: empresa única (implícita); `teams.supervisor_id` (1:1) e `users.team_id` (N:1).
 
+### Vendas (migration 003; backend das Etapas 3a e 3b)
+
+| Tabela | Papel | Regras no banco |
+|---|---|---|
+| `sales` | Venda de um lead: vendedor responsável (sempre SELLER), `team_id` = equipe dele quando passou a ser o responsável (atribuição de faturamento/ranking por equipe), `supervisor_id` histórico, `sale_date` (dia comercial), `total_cents > 0`, `PIX` (à vista) ou `CARD` (parcelas ≥ 1, sem máximo), `status` `ACTIVE`/`REVERSED` | lead e autor imutáveis; responsável SELLER ativo com equipe, equipe/supervisor = os atuais dele na criação e na troca de responsável; criar e mudar status só em READ COMMITTED; lead tem venda válida ⇔ lead ativo em Fechamento (no COMMIT); sem DELETE |
+| `sale_items` | Uma ocorrência de curso vendido (o mesmo curso pode repetir) com **preço de venda próprio** (`price_cents > 0`, migration 004) e snapshots de custo de bolsa e de comissão | curso ativo; custo = o vigente em `course_costs`; nunca apagado: só remoção lógica ou correção de preço (custo e comissão imutáveis); pelo menos um item atual por venda e **`sales.total_cents` = soma dos preços dos itens atuais** (no COMMIT) |
+| `sale_events` | Histórico da venda (append-only): `CREATED`, `UPDATED`, `REVERSED`, `REACTIVATED` | `metadata`, `occurred_at` e `txid` calculados pelo banco; o histórico precisa corresponder exatamente à mudança líquida da transação (no COMMIT); motivo obrigatório em estorno/reativação |
+
+`lead_events` ganhou `sale_id` (eventos `SALE_*`) e `lead_cycle_kind` ganhou `REOPENED` (novo ciclo quando a última venda válida é estornada).
+
+Serviço em [`src/server/modules/sales/sales.service.ts`](../src/server/modules/sales/sales.service.ts):
+
+| Função | Quem pode | O que faz |
+|---|---|---|
+| `createSale` | SELLER, SUPERVISOR, ADMIN (`sales:create`) + escopo do lead | Venda para lead ATIVO em qualquer etapa (C37). Itens `{courseId, priceCents}`; o total é a soma, calculada no servidor (nunca enviada pelo cliente). Responsável: SELLER escolhe a si ou colega ativo da própria equipe; SUPERVISOR/ADMIN, qualquer vendedor ativo (C36); nunca de equipe inativa (C38). Data: hoje no fuso do negócio; só o ADMIN informa outra (`sales:setDate`). Snapshots de custo (`course_costs`) e comissão (`business-rules.ts`) vêm do backend. Fecha o lead (ciclo `WON`, Fechamento, responsável = vendedor da venda) ou o mantém em Fechamento; grava `SALE_CREATED` e `sale_events` `CREATED`. Idempotente pelo `requestId` (vira o id da venda) |
+| `listSales` / `getSale` / `getSaleHistory` | todos (`sales:view`) + escopo | SELLER: vendas de que é responsável; SUPERVISOR: vendas cujo responsável está **hoje** na equipe que lidera (`users.team_id`, não `sales.team_id`); ADMIN: todas. **Sem custo de bolsa**; o histórico sai sem `costSnapshotCents` e sem controle técnico |
+| `getSaleWithCost` | ADMIN (`finance:viewCostAndProfit`) | Itens com o custo de bolsa (snapshot) e o total de custo |
+| `updateSale` | SELLER (só **incluir** itens, com preço, em venda válida), SUPERVISOR (+ remover itens, corrigir preços, pagamento, parcelas, responsável, venda estornada), ADMIN (+ data) — `sales:edit/editFinancial/changeSeller/editReversed/setDate` + escopo | `addItems` (preço informado, snapshots vigentes), `removeItemIds` (remoção lógica) e `repriceItems` (correção no próprio item: custo e comissão ficam iguais). O total é sempre recalculado como a soma dos itens atuais. Troca de responsável: vendedor ativo de equipe ativa; a venda vai para a equipe atual dele e o supervisor dela; se a venda é válida, o lead acompanha (`SALE_SELLER_CHANGED`). Lead da venda imutável. O banco grava `UPDATED` com antes/depois |
+| `reverseSale` | SUPERVISOR, ADMIN (`sales:reverse`) + escopo | Motivo obrigatório. Venda continua existindo (itens e snapshots), fora de faturamento/comissão/ranking. Com outra venda válida: lead continua em Fechamento, mesmo responsável. Última venda válida: Lead cadastrado em novo ciclo `REOPENED`, com o responsável atual (se ativo e da equipe do lead) ou na fila do supervisor (se inativo) — C39 |
+| `reactivateSale` | SUPERVISOR, ADMIN (`sales:reactivate`) + escopo | Motivo obrigatório. Exige responsável ativo de equipe ativa (senão, trocar o responsável antes) e lead fora da Lixeira (recuperar antes; nada é automático). Venda volta a ser válida; lead vai (ou continua) em Fechamento com o responsável da venda (`SALE_REACTIVATED`) |
+
+- **Travas:** usuários (ator, responsável atual do lead, vendedor escolhido) → equipes → lead (`lockLeadForChange`) → cursos → custos → venda → itens, numa transação `runTransaction` (READ COMMITTED + nova tentativa em deadlock).
+- **Idempotência da criação:** o formulário gera um UUID por operação (`requestId`), que vira `sales.id`. A mesma solicitação repetida (inclusive depois de resposta perdida) devolve a venda já gravada (`replayed: true`), conferida contra o retrato `CREATED` do banco; o mesmo id com outros dados ou outro autor é recusado.
+- **Concorrência das alterações:** `getSale` devolve `version` (id do último `sale_events` da venda — toda alteração confirmada gera um evento, o banco exige). `updateSale`, `reverseSale` e `reactivateSale` recebem `expectedVersion` e, com a venda travada, recusam com conflito se ela mudou: sem atualização perdida e sem repetir uma operação reenviada depois de concluída (o reenvio recebe conflito, não "sucesso repetido" — para isso seria preciso uma chave de idempotência gravada no banco).
+- **Travas das alterações:** usuários (ator, responsável do lead, responsável da venda, novo responsável) → equipes → lead (`lockLeadForSale`, sem escopo de lead: a autorização é pelo escopo da venda) → venda (`FOR UPDATE OF sales`) → cursos/custos → itens.
+
+**Telas (Etapa 3c)** em [`src/app/(app)/vendas/`](../src/app/(app)/vendas/): lista paginada no banco com filtros na URL (lead, situação, pagamento, período; responsável para SUPERVISOR/ADMIN; equipe para ADMIN), registro (`/vendas/nova`, a partir do lead), detalhe com histórico e edição. Actions finas em `actions.ts`, só com campos explícitos; o total nunca é lido do formulário (os preços em reais viram centavos por `parseBRLToCents`, sem ponto flutuante). O `requestId` é gerado ao abrir o formulário e reenviado igual em toda tentativa; o rascunho (dados + `requestId`) fica no `sessionStorage` da aba, ligado ao usuário e ao lead, vale 24 h (decisão técnica provisória) e é apagado só no sucesso confirmado — um F5 ou uma resposta perdida mantém a mesma chave, e uma nova chave só nasce em "Começar nova venda" (com confirmação se a tentativa já foi enviada). Isso vale só para a aba: outra aba ou outro dispositivo é outra tentativa. `REQUEST_ID_REUSED` não é sucesso: a tela pede para conferir as vendas do lead; se a venda registrada ficar fora do acesso do ator (ex.: atribuída a um colega), a resposta é genérica, sem dados dela. Edição, estorno e reativação levam a `version` lida na página: em conflito (ou resposta perdida no estorno/reativação) a tela pede para atualizar a venda, recarrega dados e versão antes de nova tentativa e nunca reenvia sozinha. Custo e lucro só aparecem no detalhe para quem tem `finance:viewCostAndProfit`. No Lead: botão "Registrar venda", vendas do lead e link "Ver venda" nos eventos `SALE_*`; no Kanban, coluna Fechamento (só recebe leads pela venda) e "Registrar venda" nos cards.
+
 ### Planejado (próximas fases)
 
 | Entidade | Responsabilidade | Observações de modelagem |
 |---|---|---|
-| `sales` | Cabeçalho: lead, vendedor, **`team_id` e `supervisor_id` da época (snapshot)**, data, valor total, forma de pagamento, status (`ACTIVE`/`REVERSED`), dados do estorno (quem, quando, motivo) | Faturamento, ranking e dashboards por equipe agrupam por `sales.team_id`, **nunca** pela equipe atual do vendedor. Estorno = colunas na própria venda (1:1) |
-| `sale_items` | Um curso vendido | Snapshot de `scholarship_cost_cents` e `commission_cents` no momento da venda: relatórios históricos não mudam quando custo ou comissão mudarem |
 | `installments` | Parcelas | `number`, `amount_cents`, `due_date`, `status` (`PENDING`/`PAID`), `paid_at`, `paid_by`; `UNIQUE(sale_id, number)`. Regras de geração (primeira data, recorrência, centavos) só serão definidas na fase financeira |
 | `certificates` | Controle operacional | Vinculado a `sale_item` (aluno, curso, vendedor e data da venda vêm dele); conclusão, entrega, certificadora (texto) |
 | `app_settings` | Parâmetros editáveis (ex.: comissão por curso) | O valor vigente é copiado nos registros gerados |
@@ -117,7 +143,7 @@ Serviços em [`src/server/modules/leads/leads.service.ts`](../src/server/modules
 
 | Função do serviço | Quem pode | O que faz |
 |---|---|---|
-| `createLead` | SELLER (`leads:create`) | Cadastra na própria carteira e equipe: etapa `NEW`, ciclo 1 (`INITIAL`), evento `CREATED`. Curso de interesse ativo obrigatório |
+| `createLead` | SELLER, SUPERVISOR, ADMIN (`leads:create`, C41) | SELLER cadastra na própria carteira e equipe; SUPERVISOR/ADMIN informam o vendedor responsável (`sellerId`), com as regras da transferência: SUPERVISOR só da equipe que lidera, ADMIN qualquer um, sempre vendedor ativo de equipe ativa; a equipe do lead é a do vendedor e o autor (`created_by`, ator do evento) é quem cadastrou. Etapa `NEW`, ciclo 1 (`INITIAL`), evento `CREATED`. Curso de interesse ativo obrigatório; duplicidade e Lixeira como antes |
 | `listLeads` / `getLead` | todos (`leads:view`) + escopo | SELLER: próprios leads **ativos**; SUPERVISOR: equipe que lidera (inclui fila e Lixeira); ADMIN: todos. Fora do escopo → 404. `listLeads` é **paginada no banco** (`page`, `pageSize` 25/50/100; devolve `items`, `page`, `pageSize`, `total`, `totalPages`) com filtros de busca (nome ou telefone, formatado ou não), etapa, situação, curso, vendedor, equipe e fila (`queue`). O escopo entra no WHERE junto com os filtros e a contagem usa as mesmas condições. Cada item traz `queueReason` (sem responsável / Follow-up 3 vencido) |
 | `editLead` | SELLER (próprios), SUPERVISOR (equipe), ADMIN (todos) — `leads:edit` + escopo | Edita **só** nome, telefone e curso de interesse (ativo). Lead na Lixeira: recusado (recuperar antes). Não mexe em responsável, equipe, etapa, prazos, situação nem ciclo. Só grava se algo mudou; evento `DETAILS_UPDATED` com de/para apenas dos campos alterados (curso com id, nome e instituição) |
 | `getLeadTimeline` | quem enxerga o lead | Todos os eventos, de todos os ciclos, com nomes do ator, responsável, equipe e supervisor da época, de → para e o texto da observação |
@@ -194,7 +220,8 @@ FU3 vencido -> volta para o Supervisor -> Lixeira (status = TRASHED)
 ## 5. Estratégia de auditoria: combinação
 
 - **`lead_events` + `lead_notes`** são a trilha oficial do lead (quem, quando, de → para). Atendem "Mudanças de estágio, responsável… devem produzir eventos" sem duplicar em outra tabela.
-- **`audit_events`** (central, append-only) cobre o restante: autenticação, usuários, equipes, custos de curso, criação/estorno de venda, parcelas, certificados e mudanças financeiras. Guarda `team_id` para permitir auditoria por equipe ao supervisor.
+- **`sale_events`** é a trilha oficial da venda (criação, alterações, estorno, reativação), com o conteúdo calculado e conferido pelo PostgreSQL (migration 003). Os fatos de venda que afetam o lead também entram em `lead_events` (`SALE_*`). Vendas **não** são duplicadas em `audit_events`.
+- **`audit_events`** (central, append-only) cobre o restante: autenticação, usuários, equipes, custos de curso, parcelas, certificados e mudanças financeiras. Guarda `team_id` para permitir auditoria por equipe ao supervisor.
 - A tela de Auditoria (admin) poderá unir as duas fontes numa única linha do tempo.
 - Registros de auditoria são gravados **na mesma transação** da mudança: se a mudança falhar, nada é auditado, e vice-versa.
 
@@ -237,7 +264,7 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 | **3. Kanban + Follow-up** ✅ | Máquina de estados no backend, prazos, Follow-up 3 vencido somente leitura, quadro com arrastar validado | §6, §7 |
 | **4. Negociação** ✅ | Observações renovando o prazo, vencimento e bloqueio do vendedor | §8 |
 | 5. Retrabalho + Lixeira | ✅ entregue junto da fase 2 (serviços e telas) | §9 |
-| 6. Vendas | Venda + itens + comissão + custo/lucro (admin) | §11, §13, §14 |
+| 6. Vendas | **3a ✅** registro e consultas. **3b ✅** edição, estorno e reativação (backend). **3c ✅** telas e integração com Leads/Kanban | §11, §13, §14, §15 |
 | 7. Pagamentos e parcelas | Pix/cartão, geração e baixa de parcelas | §12 |
 | 8. Estorno | Cancelamento com motivo, área de estornos | §15 |
 | 9. Ranking | Métrica × escopo × período | §16 |
@@ -252,13 +279,13 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 
 | # | Decisão | Onde está refletida |
 |---|---|---|
-| C1 | **Estorno só pelo SUPERVISOR.** O ADMIN tem visão global, mas não executa automaticamente as ações operacionais | `sales:reverse` = `SUPERVISOR` (teste em `tests/authz/policies.test.ts`) |
+| C1 | ~~**Estorno só pelo SUPERVISOR.** O ADMIN tem visão global, mas não executa automaticamente as ações operacionais~~ — **substituída pela C36** (o Documento Mestre §4.4 já dava "Sim" ao administrador) | — |
 | C2 | **"1 dia" = 24 horas corridas** desde a entrada na etapa ou a última atualização válida | `business-rules.ts`, §4 |
 | C3 | **Retrabalho é etapa visível do Kanban**, e o histórico distingue os ciclos de follow-up | `stage = REWORK` + `lead_cycles`, §4 |
 | C4 | **Vendedor que muda de equipe leva os leads em aberto**; vendas e eventos passados ficam com a equipe da época | §3 "Equipe da época × equipe atual"; auditoria da troca com retrato de origem e destino (implementado) |
-| C5 | **Supervisor não tem carteira comercial.** Só o SELLER tem leads, vendas, follow-ups, negociações e comissões | `leads:create` e `sales:create` = `SELLER`; trigger garante que `leads.owner_id` seja sempre um SELLER ✅ |
+| C5 | **Supervisor não tem carteira comercial.** Só o SELLER tem leads, vendas, follow-ups, negociações e comissões: o **responsável** de lead e de venda é sempre um SELLER. *Atualizada pela C36:* SUPERVISOR e ADMIN também **registram** vendas, escolhendo o vendedor responsável. *Atualizada pela C41:* também **cadastram** leads, escolhendo o vendedor responsável | triggers garantem que `leads.owner_id` e `sales.seller_id` sejam sempre SELLER ✅ |
 | C6 | **Parcelas**: só a estrutura (número, valor, vencimento, status, data de pagamento). Regras de geração ficam para a fase financeira | §3 |
-| C7 | **ADMIN opera leads globalmente**: transfere, redistribui, manda para a Lixeira, recupera e escolhe o novo vendedor. A restrição de estorno (C1) vale só para Vendas | `leads:transfer/redistribute/trash/restore` incluem ADMIN |
+| C7 | **ADMIN opera leads globalmente**: transfere, redistribui, manda para a Lixeira, recupera e escolhe o novo vendedor. *(A restrição de estorno da C1 foi substituída pela C36: o ADMIN também estorna e reativa vendas.)* | `leads:transfer/redistribute/trash/restore` incluem ADMIN |
 | C8 | **Telefone**: só números brasileiros, DDD obrigatório, celular com 9º dígito. Qualquer formato de entrada vira um telefone canônico único (`(79) 99999-9999` = `+55 79 99999-9999`), com unicidade garantida no PostgreSQL ✅ `src/lib/phone.ts` + `leads_phone_unique` + `CHECK leads_phone_canonical` |
 | C9 | **Duplicado ativo**: bloquear e informar só que já existe, o nome do responsável e a equipe. Nada de histórico, observações ou outros dados. Vale também ao editar o telefone | ✅ `LeadAlreadyExistsError` |
 | C10 | **Duplicado na Lixeira**: bloquear; o lead é o MESMO registro. Mensagem: "Este lead já está cadastrado e encontra-se na Lixeira. Solicite ao supervisor ou administrador a recuperação." | ✅ `LeadAlreadyExistsError` |
@@ -287,6 +314,12 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 | C33 | **Prazos**: entrada em FU1/FU2/FU3/Negociação = agora + 24 h; Lead cadastrado, Não respondeu e Retrabalho sem prazo; observação em Negociação renova para agora + 24 h sem mudar a entrada | `moveLeadStage`, `addLeadNote` |
 | C34 | **Negociação vencida** bloqueia o vendedor de cadastrar leads e de movimentar outros leads; consulta liberada; some quando todas são atualizadas | `NegotiationOverdueError` |
 | C35 | **Follow-up 3 vencido**: somente leitura para o vendedor (sem movimentar, editar ou registrar atualização) | `assertSellerMayChange` |
+| C36 | **Permissões de Vendas** (substitui a C1): SELLER, SUPERVISOR e ADMIN registram vendas no próprio escopo. SELLER atribui a si ou a vendedor ativo da própria equipe; SUPERVISOR e ADMIN, a qualquer vendedor ativo. Consulta: SELLER as próprias; SUPERVISOR as dos vendedores **atualmente** na sua equipe; ADMIN todas. Estorno e reativação (motivo obrigatório): SUPERVISOR e ADMIN; nunca o SELLER. Só o ADMIN altera a data da venda; só SUPERVISOR/ADMIN trocam o responsável | `sales:view/create/setDate/reverse/reactivate`; `createSale` |
+| C37 | **Venda com Follow-up 3 vencido ou negociação vencida é permitida**: a venda leva o lead a Fechamento e preserva o histórico. As restrições dessas situações para as demais operações de Leads continuam | `createSale` (não aplica `assertSellerMayChange` nem o bloqueio de negociação) |
+| C40 | **Preço de venda por item**: cada curso da venda tem preço próprio (> 0), distinto do custo da bolsa; o mesmo curso pode repetir com preços diferentes; o total é a soma dos itens atuais, calculada no servidor e conferida pelo banco. SELLER registra e inclui itens com preço, mas não remove itens nem corrige preços; SUPERVISOR e ADMIN removem e corrigem (preservando custo e comissão da época) | migration 004; `createSale`, `updateSale` |
+| C39 | **Estorno e reativação**: com outra venda válida, o estorno mantém o lead em Fechamento e o responsável. Estornada a última venda válida, o lead volta para Lead cadastrado em ciclo `REOPENED`, mantendo o responsável se ele estiver ativo e elegível, ou na fila do supervisor. A reativação exige motivo, responsável ativo de equipe ativa e lead fora da Lixeira; o lead volta a Fechamento com o responsável da venda. Venda estornada é somente leitura para o SELLER | `reverseSale`, `reactivateSale`, `updateSale` |
+| C41 | **Cadastro de leads** (atualiza C5): SELLER, SUPERVISOR e ADMIN cadastram. SELLER na própria carteira; SUPERVISOR para vendedor ativo da equipe que lidera; ADMIN para vendedor ativo de qualquer equipe ativa. O responsável continua sendo sempre um SELLER (o supervisor não ganha carteira). O bloqueio por negociação vencida (C34) continua valendo só para o SELLER que cadastra | `leads:create`, `createLead` |
+| C38 | **Equipe inativa**: vendedor dela não é reativado, não recebe leads novos (cadastro, transferência, redistribuição, recuperação) nem vendas novas; nada histórico é alterado. Regularização: o ADMIN reativa a equipe ou transfere o vendedor para uma equipe ativa | `setUserActive`, `createLead`, `loadTargetSeller`, `createSale` |
 
 ### Decisões técnicas
 
@@ -300,15 +333,15 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 
 ## 9. Dúvidas em aberto
 
-Resolvidas pelo cliente: C1–C35 (§8). As linhas abaixo mantêm a numeração original; as resolvidas foram removidas. Pendentes:
+Resolvidas pelo cliente: C1–C41 (§8). As linhas abaixo mantêm a numeração original; as resolvidas foram removidas. Pendentes:
 
 | # | Dúvida | Contexto | Padrão atual | Fase |
 |---|---|---|---|---|
 | 3 | Vendedor pode **exportar relatórios** (só os próprios dados)? | §4.4: "Não confirmado" | Negado | Relatórios |
-| 4 | **Depois da venda**: o lead fica em Fechamento? Pode comprar de novo depois? Se a venda for **estornada**, volta para qual etapa? | Não definido | — | Vendas/Estorno |
+| 4 | ~~Depois da venda~~ — **resolvida:** o lead fica em Fechamento enquanto houver venda válida e pode comprar de novo; estornada a última venda válida, volta para Lead cadastrado em novo ciclo `REOPENED` (Etapa 3b) | — | — | — |
 | 5 | **Supervisor vê lucro/custo agregado do time?** | §17.2 × regra "não visualiza custos" | Custo e lucro só para admin | Dashboards |
 | 6 | **"Por curso/aluno"**: uma venda pode ter cursos de **alunos diferentes**? | §14 e RA-03 | Item = curso; aluno = lead da venda | Vendas |
-| 7 | **Custo de bolsa alterado**: vendas antigas mantêm o custo da época? | §26 | Proposta: sim (snapshot em `sale_items`) | Vendas |
+| 7 | ~~Custo de bolsa alterado~~ — **resolvida:** vendas antigas mantêm o custo e a comissão da época (snapshot em `sale_items`) | — | — | — |
 | 11 | Formato e colunas de cada relatório | §26 | — | Relatórios |
 | 26 | **SUPERVISOR ou ADMIN movimentam etapas** de um lead da equipe? | C5: só o vendedor tem carteira e follow-ups | Não (`leads:move` = SELLER) | Kanban |
 | 27 | **Negociação vencida** deveria bloquear também **parcelas e certificados** quando existirem? | C34 cita só cadastro e movimentação de leads | Não bloqueia | Vendas |

@@ -8,6 +8,10 @@ import { teams, users } from "./organization";
  * do schema: CHECKs, FKs compostas e triggers de integridade (responsável
  * SELLER ativo da mesma equipe, coerência lead x ciclos, append-only, sem
  * exclusão física) existem só no SQL.
+ *
+ * A migration 003_sales.sql acrescentou o ciclo REOPENED, os eventos SALE_* e
+ * lead_events.sale_id (a FK composta (lead_id, sale_id) → sales(lead_id, id)
+ * e as CHECKs dos eventos de venda também existem só no SQL).
  */
 
 export const LEAD_STAGES = [
@@ -28,7 +32,8 @@ export type LeadStatus = (typeof LEAD_STATUSES)[number];
 export const LEAD_UNASSIGNED_REASONS = ["OWNER_DEACTIVATED"] as const;
 export type LeadUnassignedReason = (typeof LEAD_UNASSIGNED_REASONS)[number];
 
-export const LEAD_CYCLE_KINDS = ["INITIAL", "REWORK"] as const;
+/** REOPENED: novo ciclo aberto quando a última venda válida do lead é estornada. */
+export const LEAD_CYCLE_KINDS = ["INITIAL", "REWORK", "REOPENED"] as const;
 export type LeadCycleKind = (typeof LEAD_CYCLE_KINDS)[number];
 
 export const LEAD_CYCLE_END_REASONS = ["REDISTRIBUTED", "TRASHED", "WON"] as const;
@@ -45,6 +50,10 @@ export const LEAD_EVENT_TYPES = [
   "TRASHED",
   "RESTORED",
   "NOTE_ADDED",
+  "SALE_CREATED",
+  "SALE_REVERSED",
+  "SALE_REACTIVATED",
+  "SALE_SELLER_CHANGED",
 ] as const;
 export type LeadEventType = (typeof LEAD_EVENT_TYPES)[number];
 
@@ -187,6 +196,8 @@ export const leadEvents = pgTable(
     fromSupervisorId: uuid("from_supervisor_id").references(() => users.id, { onDelete: "restrict" }),
     unassignedReason: leadUnassignedReason("unassigned_reason"),
     noteId: uuid("note_id"),
+    /** Venda do mesmo lead; preenchida exatamente nos eventos SALE_*. */
+    saleId: uuid("sale_id"),
     metadata: jsonb("metadata")
       .$type<Record<string, unknown>>()
       .notNull()

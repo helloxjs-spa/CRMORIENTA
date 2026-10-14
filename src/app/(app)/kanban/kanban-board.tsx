@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, GripVertical, Loader2, Lock } from "lucide-react";
+import { ArrowRight, GripVertical, Loader2, Lock, ShoppingCart } from "lucide-react";
 import Link from "next/link";
 import { useOptimistic, useState, useTransition } from "react";
 import { DropdownMenu } from "@/components/ui/dropdown-menu";
@@ -29,6 +29,8 @@ export type KanbanCard = {
   targets: LeadStage[];
   adminActions: LeadActionKey[];
   actionTarget: LeadActionTarget;
+  /** "Registrar venda" (quem tem `sales:create`); o serviço revalida escopo e lead. */
+  saleHref: string | null;
   pending?: boolean;
 };
 
@@ -99,7 +101,10 @@ export function KanbanBoard({ columns, now, canMove }: { columns: KanbanColumn[]
             )}
           >
             <header className="flex items-center justify-between gap-2 px-3 py-2.5">
-              <h2 className="text-sm font-semibold text-slate-800">{STAGE_LABELS[column.stage]}</h2>
+              <h2 className="text-sm font-semibold text-slate-800">
+                {STAGE_LABELS[column.stage]}
+                {column.stage === "CLOSED" && <span className="block text-[11px] font-normal text-slate-500">Entra pelo registro de venda</span>}
+              </h2>
               <span className="rounded-full bg-white px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-slate-200">{column.total}</span>
             </header>
             <ol className="flex max-h-[calc(100vh-17rem)] min-h-24 flex-col gap-2 overflow-y-auto px-2 pb-2">
@@ -119,7 +124,7 @@ export function KanbanBoard({ columns, now, canMove }: { columns: KanbanColumn[]
               ))}
               {column.cards.length === 0 && (
                 <li className="rounded-lg border border-dashed border-slate-300 px-3 py-6 text-center text-xs text-slate-400">
-                  {isTarget ? "Solte aqui" : "Nenhum lead"}
+                  {isTarget ? "Solte aqui" : column.stage === "CLOSED" ? "Nenhum lead com venda" : "Nenhum lead"}
                 </li>
               )}
             </ol>
@@ -132,16 +137,6 @@ export function KanbanBoard({ columns, now, canMove }: { columns: KanbanColumn[]
         );
       })}
 
-      {/* Fechamento: depende da criação da venda (fase Vendas). Nunca aceita card. */}
-      <section aria-label="Fechamento" className="flex w-72 shrink-0 snap-start flex-col rounded-xl bg-slate-50 ring-1 ring-slate-200">
-        <header className="flex items-center justify-between gap-2 px-3 py-2.5">
-          <h2 className="text-sm font-semibold text-slate-400">{STAGE_LABELS.CLOSED}</h2>
-          <Lock className="size-4 text-slate-400" aria-hidden />
-        </header>
-        <p className="mx-2 mb-2 rounded-lg border border-dashed border-slate-300 px-3 py-6 text-center text-xs text-slate-500">
-          Indisponível até a fase de Vendas: o fechamento acontece ao registrar uma venda, não arrastando o card.
-        </p>
-      </section>
     </div>
   );
 }
@@ -213,6 +208,17 @@ function Card({
           {card.ownerName}
           {card.teamName ? ` · ${card.teamName}` : ""}
         </p>
+      )}
+      {card.saleHref && !card.pending && (
+        <Link
+          href={card.saleHref}
+          draggable={false}
+          className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:underline"
+          aria-label={`Registrar venda para ${card.name}`}
+        >
+          <ShoppingCart className="size-3.5" aria-hidden />
+          Registrar venda
+        </Link>
       )}
     </li>
   );

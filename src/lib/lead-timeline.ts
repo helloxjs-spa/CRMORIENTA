@@ -79,5 +79,27 @@ export function describeLeadEvent(event: LeadTimelineEntry, now: Date = new Date
     }
     case "DETAILS_UPDATED":
       return { title: "Dados atualizados", lines: detailsLines(event.metadata) };
+    // Eventos de venda (migration 003): só o retrato gravado no evento.
+    case "SALE_CREATED":
+      return {
+        title: "Venda registrada",
+        lines: [
+          ...(event.fromStage && event.fromStage !== event.stage ? [`Etapa anterior: ${STAGE_LABELS[event.fromStage]}`] : []),
+          ...(event.fromOwnerName ? [`${fromOwner} → ${owner}`] : []),
+          ...teamMove,
+        ],
+      };
+    case "SALE_REVERSED":
+      return {
+        title: "Venda estornada",
+        lines: event.fromStage && event.fromStage !== event.stage ? [`Lead reaberto em ${STAGE_LABELS[event.stage]}`] : [],
+      };
+    case "SALE_REACTIVATED":
+      return {
+        title: "Venda reativada",
+        lines: [...(event.fromOwnerName ? [`${fromOwner} → ${owner}`] : []), ...teamMove],
+      };
+    case "SALE_SELLER_CHANGED":
+      return { title: "Responsável da venda alterado", lines: [`${fromOwner} → ${owner}`, ...teamMove] };
   }
 }

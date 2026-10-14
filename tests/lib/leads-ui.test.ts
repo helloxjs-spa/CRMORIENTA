@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { leadActionsFor, moveTargetsFor } from "@/app/(app)/leads/policy";
+import { leadActionsFor, leadCreationMode, moveTargetsFor } from "@/app/(app)/leads/policy";
 import { leadsHref, parseLeadsParams, toListFilters } from "@/app/(app)/leads/search-params";
 import type { Actor } from "@/server/authz/actor";
 import { formatRelativeDateTime } from "@/lib/format";
@@ -73,6 +73,7 @@ describe("timeline: texto vem só do evento gravado", () => {
     fromSupervisorName: null,
     unassignedReason: null,
     note: null,
+    saleId: null,
     metadata: {},
     ...overrides,
   });
@@ -201,5 +202,15 @@ describe("ações oferecidas pela interface (o backend revalida tudo)", () => {
     expect(leadActionsFor({ ...lead, status: "TRASHED" }, seller)).toEqual([]);
     expect(leadActionsFor({ ...lead, stage: "CLOSED" }, supervisor)).toEqual(["edit"]);
     expect(moveTargetsFor({ ...lead, stage: "CLOSED" }, seller, free)).toEqual([]);
+  });
+});
+
+describe("cadastro de lead oferecido pela interface (C41, alinhado ao serviço)", () => {
+  it("SELLER com equipe cadastra para si; sem equipe, não; SUPERVISOR e ADMIN escolhem o vendedor", () => {
+    expect(leadCreationMode({ role: "SELLER", teamId: "teamA" })).toBe("own");
+    expect(leadCreationMode({ role: "SELLER", teamId: null })).toBeNull();
+    expect(leadCreationMode({ role: "SUPERVISOR", teamId: null })).toBe("chooseSeller");
+    expect(leadCreationMode({ role: "ADMIN", teamId: null })).toBe("chooseSeller");
+    expect(leadCreationMode({ role: "VISITANTE" as Actor["role"], teamId: null })).toBeNull();
   });
 });

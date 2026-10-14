@@ -31,6 +31,7 @@ export async function createLeadAction(_prev: ActionState, formData: FormData): 
       name: text(formData, "name"),
       phone: text(formData, "phone"),
       interestCourseId: text(formData, "interestCourseId"),
+      sellerId: text(formData, "sellerId") || undefined,
     });
     revalidateLeadViews();
     return "Lead cadastrado.";

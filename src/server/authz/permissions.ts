@@ -11,8 +11,11 @@ import type { Actor } from "./actor";
  * decisão do cliente (ver docs/ARQUITETURA.md, Dúvidas).
  *
  * Decisões do cliente que corrigem o Documento Mestre (docs/ARQUITETURA.md §8):
- * - Somente SELLER possui carteira comercial (leads e vendas próprios).
- * - Somente SUPERVISOR executa estorno; ADMIN tem visão global, não operação.
+ * - Somente SELLER possui carteira comercial: o responsável de lead e de venda
+ *   é sempre um SELLER (C5).
+ * - Vendas (C36, substitui C1): SELLER, SUPERVISOR e ADMIN registram (o
+ *   responsável escolhido é sempre um vendedor); SUPERVISOR e ADMIN estornam
+ *   e reativam; só o ADMIN escolhe a data da venda.
  */
 const MATRIX = {
   // Organização (fase 1)
@@ -25,7 +28,8 @@ const MATRIX = {
   // Comercial (fases seguintes; declarado aqui para manter a matriz única)
   /** Ver leads: sempre combinado com o escopo (próprios / equipe / todos). */
   "leads:view": ["ADMIN", "SUPERVISOR", "SELLER"],
-  "leads:create": ["SELLER"],
+  /** Cadastrar lead: SELLER na própria carteira; SUPERVISOR/ADMIN escolhem o vendedor responsável (C41). */
+  "leads:create": ["ADMIN", "SUPERVISOR", "SELLER"],
   /** Editar nome, telefone e curso de interesse: sempre combinado com o escopo. */
   "leads:edit": ["ADMIN", "SUPERVISOR", "SELLER"],
   /** Observações: quem opera o lead (o vendedor responsável). */
@@ -36,8 +40,27 @@ const MATRIX = {
   "leads:redistribute": ["ADMIN", "SUPERVISOR"],
   "leads:trash": ["ADMIN", "SUPERVISOR"],
   "leads:restore": ["ADMIN", "SUPERVISOR"],
-  "sales:create": ["SELLER"],
-  "sales:reverse": ["SUPERVISOR"],
+  /** Ver vendas: sempre combinado com o escopo (próprias / equipe ATUAL do responsável / todas). */
+  "sales:view": ["ADMIN", "SUPERVISOR", "SELLER"],
+  /**
+   * Registrar venda (C36). Quem pode ser o responsável é decidido no serviço:
+   * SELLER escolhe a si ou um colega ativo da própria equipe; SUPERVISOR e
+   * ADMIN, qualquer vendedor ativo; nunca vendedor de equipe inativa.
+   */
+  "sales:create": ["ADMIN", "SUPERVISOR", "SELLER"],
+  /** Informar/alterar a data da venda (os demais registram com a data de hoje no fuso do negócio). */
+  "sales:setDate": ["ADMIN"],
+  /** Editar venda no escopo: incluir/remover cursos (itens). */
+  "sales:edit": ["ADMIN", "SUPERVISOR", "SELLER"],
+  /** Alterar valor total, forma de pagamento e parcelas. */
+  "sales:editFinancial": ["ADMIN", "SUPERVISOR"],
+  /** Trocar o vendedor responsável (o lead acompanha se a venda for válida). */
+  "sales:changeSeller": ["ADMIN", "SUPERVISOR"],
+  /** Corrigir venda estornada (para o vendedor ela é somente leitura). */
+  "sales:editReversed": ["ADMIN", "SUPERVISOR"],
+  /** Estornar e reativar (Etapa 3b; motivo obrigatório). */
+  "sales:reverse": ["ADMIN", "SUPERVISOR"],
+  "sales:reactivate": ["ADMIN", "SUPERVISOR"],
   "installments:markPaid": ["ADMIN", "SUPERVISOR", "SELLER"],
   /** Lista operacional de cursos ATIVOS, sem custo (usada em leads e vendas). */
   "courses:list": ["ADMIN", "SUPERVISOR", "SELLER"],

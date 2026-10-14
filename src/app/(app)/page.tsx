@@ -135,7 +135,7 @@ const UPCOMING = [
   "Leads com bloqueio de telefone duplicado e transferência com histórico",
   "Kanban comercial, follow-ups com prazo e bloqueio por negociação vencida",
   "Retrabalho, lixeira e recuperação de leads",
-  "Cursos, vendas com múltiplos cursos, parcelas e comissões",
+  "Parcelas e comissões",
   "Estornos, ranking, dashboards, certificados e relatórios",
 ];
 

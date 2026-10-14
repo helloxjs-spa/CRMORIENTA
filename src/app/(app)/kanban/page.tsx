@@ -21,8 +21,11 @@ import { KanbanBoard, type KanbanCard, type KanbanColumn } from "./kanban-board"
 
 export const metadata: Metadata = { title: "Kanban" };
 
-/** Colunas operacionais (Lixeira é visão separada; Fechamento depende de Vendas). */
-const BOARD_STAGES: LeadStage[] = ["NEW", "NO_ANSWER", "FOLLOW_UP_1", "FOLLOW_UP_2", "FOLLOW_UP_3", "NEGOTIATION", "REWORK"];
+/**
+ * Colunas do quadro (Lixeira é visão separada). Fechamento só recebe leads
+ * pelo registro de venda: nenhuma transição de etapa leva a ele.
+ */
+const BOARD_STAGES: LeadStage[] = ["NEW", "NO_ANSWER", "FOLLOW_UP_1", "FOLLOW_UP_2", "FOLLOW_UP_3", "NEGOTIATION", "REWORK", "CLOSED"];
 /** Cards por coluna; o total aparece no cabeçalho e o restante fica na lista. */
 const CARDS_PER_COLUMN = 50;
 
@@ -31,6 +34,7 @@ export default async function KanbanPage({ searchParams }: PageProps<"/kanban">)
   const { actor } = ctx;
   const canManage = hasPermission(actor, "leads:transfer");
   const isAdmin = actor.role === "ADMIN";
+  const canSell = hasPermission(actor, "sales:create");
 
   const raw = parseLeadsParams(await searchParams);
   const params: LeadsParams = { ...raw, view: "carteira", stage: undefined, page: 1, ...(canManage ? {} : { seller: undefined, team: undefined }) };
@@ -77,6 +81,7 @@ export default async function KanbanPage({ searchParams }: PageProps<"/kanban">)
         targets: moveTargetsFor(lead, actor, situation, now),
         adminActions: leadActionsFor(lead, actor, situation),
         actionTarget: actionTarget(lead),
+        saleHref: canSell ? `/vendas/nova?lead=${lead.id}` : null,
       }),
     ),
   }));

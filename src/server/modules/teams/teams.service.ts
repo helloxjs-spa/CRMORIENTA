@@ -6,6 +6,7 @@ import { assertCanManageTeam, managedTeamScope } from "@/server/authz/scope";
 import type { ServiceContext } from "@/server/context";
 import { isUniqueViolation } from "@/server/db/errors";
 import { teams, users } from "@/server/db/schema";
+import { runTransaction } from "@/server/db/transaction";
 import type { Database } from "@/server/db/types";
 import { ConflictError, NotFoundError, ValidationError } from "@/server/errors";
 import { recordAudit } from "@/server/modules/audit/audit.service";
@@ -141,8 +142,11 @@ export async function createTeam({ db, actor }: ServiceContext, input: unknown):
   const data = parseInput(createTeamSchema, input);
 
   try {
-    const id = await db.transaction(async (tx) => {
-      if (data.supervisorId) await assertEligibleSupervisor(tx, data.supervisorId);
+    const id = await runTransaction(db, async (tx) => {
+      if (data.supervisorId) {
+        await lockSupervisorCandidate(tx, data.supervisorId);
+        await assertEligibleSupervisor(tx, data.supervisorId);
+      }
       const [created] = await tx
         .insert(teams)
         .values({ name: data.name, supervisorId: data.supervisorId ?? null })
@@ -174,7 +178,15 @@ export async function updateTeam({ db, actor }: ServiceContext, rawId: unknown, 
   const data = parseInput(updateTeamSchema, input);
 
   try {
-    await db.transaction(async (tx) => {
+    await runTransaction(db, async (tx) => {
+      // Trava a equipe ANTES de ler e contar (FOR NO KEY UPDATE, o modo do
+      // UPDATE que virá). Quem põe vendedor ou lead na equipe trava a mesma
+      // linha com FOR SHARE (troca de equipe, cadastro de vendedor, mutações de
+      // lead): ou já terminou e entra nas contagens, ou espera esta transação e
+      // depois vê a equipe inativa. Assim a verificação e a desativação são
+      // atômicas. Só trava equipe (nenhum usuário/lead depois): não inverte a
+      // ordem usuários → equipe → lead das demais operações.
+      await tx.select({ id: teams.id }).from(teams).where(eq(teams.id, id)).for("no key update");
       const before = await findTeamView(tx, id);
       if (!before) throw new NotFoundError();
 
@@ -220,7 +232,15 @@ export async function setTeamSupervisor({ db, actor }: ServiceContext, rawId: un
   const { supervisorId } = parseInput(setSupervisorSchema, input);
 
   try {
-    await db.transaction(async (tx) => {
+    await runTransaction(db, async (tx) => {
+      // Ordem usuários → equipe: o novo supervisor (FOR SHARE) não pode ser
+      // desativado até o COMMIT; a desativação de supervisor trava o próprio
+      // usuário antes de verificar se ele lidera equipe, então uma das duas
+      // espera a outra e vê o resultado. A equipe (FOR UPDATE, o modo do UPDATE
+      // de supervisor_id) espera as mutações de lead em andamento, que gravam o
+      // supervisor atual nos eventos.
+      if (supervisorId) await lockSupervisorCandidate(tx, supervisorId);
+      await tx.select({ id: teams.id }).from(teams).where(eq(teams.id, id)).for("update");
       const team = await findTeamView(tx, id);
       if (!team) throw new NotFoundError();
       if (team.supervisorId === supervisorId) return;
@@ -247,7 +267,12 @@ export async function setTeamSupervisor({ db, actor }: ServiceContext, rawId: un
   }
 }
 
-/** Valida o supervisor e devolve o nome dele. */
+/** Trava (FOR SHARE) o usuário escolhido como supervisor até o COMMIT. */
+async function lockSupervisorCandidate(db: Database, userId: string): Promise<void> {
+  await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).for("share");
+}
+
+/** Valida o supervisor (já travado por lockSupervisorCandidate) e devolve o nome dele. */
 async function assertEligibleSupervisor(db: Database, userId: string): Promise<string> {
   const [user] = await db
     .select({ name: users.name, role: users.role, active: users.active, ledTeamId: teams.id })

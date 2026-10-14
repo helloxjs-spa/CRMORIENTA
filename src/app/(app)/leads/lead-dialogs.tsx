@@ -81,16 +81,53 @@ function LeadFields({
   );
 }
 
-export function NewLeadDialog({ courses }: { courses: CourseChoice[] }) {
+export type NewLeadSellerChoice = { id: string; name: string; teamName: string | null };
+
+/**
+ * Cadastro de lead. Sem `sellers` (SELLER): entra na carteira de quem cadastra.
+ * Com `sellers` (SUPERVISOR/ADMIN): escolhe o vendedor responsável (C41).
+ */
+export function NewLeadDialog({
+  courses,
+  sellers,
+  groupByTeam = false,
+}: {
+  courses: CourseChoice[];
+  sellers?: NewLeadSellerChoice[];
+  groupByTeam?: boolean;
+}) {
   return (
     <ActionDialog
       trigger={{ label: "Novo Lead", icon: Plus }}
       title="Novo lead"
-      description="O lead entra na sua carteira, na etapa Lead cadastrado."
+      description={
+        sellers
+          ? "O lead entra na carteira do vendedor escolhido, na etapa Lead cadastrado."
+          : "O lead entra na sua carteira, na etapa Lead cadastrado."
+      }
       action={createLeadAction}
       submitLabel="Cadastrar lead"
     >
-      {(errors) => <LeadFields idPrefix="new-lead" errors={errors} courses={courses} />}
+      {(errors) => (
+        <>
+          <LeadFields idPrefix="new-lead" errors={errors} courses={courses} />
+          {sellers && (
+            <Field label="Vendedor responsável" htmlFor="new-lead-seller" errors={errors.sellerId}>
+              <Select id="new-lead-seller" name="sellerId" required defaultValue="">
+                <option value="" disabled>
+                  {sellers.length === 0 ? "Nenhum vendedor ativo disponível" : "Selecione o vendedor"}
+                </option>
+                {sellers.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                    {groupByTeam && s.teamName ? ` — ${s.teamName}` : ""}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
+        </>
+      )}
     </ActionDialog>
   );
 }

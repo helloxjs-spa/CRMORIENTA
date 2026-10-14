@@ -25,10 +25,11 @@ import {
   type LeadStatus,
   type LeadUnassignedReason,
 } from "@/server/db/schema";
+import { RetryTransactionError, runTransaction } from "@/server/db/transaction";
 import type { Database } from "@/server/db/types";
 import { ConflictError, NotFoundError, ValidationError } from "@/server/errors";
 import { idSchema, nameSchema, parseInput } from "@/server/validation";
-import { recordLeadEvents, supervisorOf } from "./leads.internal";
+import { lockTeamsForShare, lockUsersForChange, recordLeadEvents, supervisorOf, type LeadEventInput } from "./leads.internal";
 
 /**
  * Leads (Documento Mestre §5, §7, §9, §19; decisões C3–C12 e C15–C20 em
@@ -103,6 +104,8 @@ export type LeadTimelineEntry = {
   fromSupervisorName: string | null;
   unassignedReason: LeadUnassignedReason | null;
   note: string | null;
+  /** Venda do evento (SALE_*), para o link na linha do tempo. */
+  saleId: string | null;
   metadata: Record<string, unknown>;
 };
 
@@ -138,6 +141,14 @@ export class LeadAlreadyExistsError extends ConflictError {
   }
 }
 
+
+/** Cadastro de lead por vendedor cuja equipe está inativa. */
+export const OWN_TEAM_INACTIVE = "Sua equipe está inativa. Procure o administrador.";
+
+/** Cadastro por SUPERVISOR/ADMIN sem vendedor responsável. */
+export const LEAD_SELLER_REQUIRED = "Selecione o vendedor responsável pelo lead.";
+/** SELLER só cadastra leads na própria carteira. */
+export const LEAD_SELLER_SELF_ONLY = "Você cadastra leads apenas na sua carteira.";
 
 /** Lead com Follow-up 3 vencido: somente leitura para o vendedor (C27/C32). */
 export const AWAITING_SUPERVISOR_MESSAGE =
@@ -179,6 +190,8 @@ const createLeadSchema = z.strictObject({
   name: nameSchema,
   phone: phoneSchema,
   interestCourseId: idSchema,
+  /** Vendedor responsável: obrigatório para SUPERVISOR/ADMIN; o SELLER cadastra para si (C41). */
+  sellerId: idSchema.optional(),
 });
 
 /**
@@ -298,8 +311,8 @@ async function findLeadView(db: Database, actor: Actor, id: string): Promise<Lea
   return withQueueReason(rows)[0];
 }
 
-/** Lê e trava o lead para alteração, dentro do escopo do ator. */
-async function lockLead(db: Database, actor: Actor, id: string) {
+/** Lê e trava o lead para alteração, dentro do escopo informado (undefined = sem restrição). */
+async function lockLead(db: Database, id: string, scope: SQL | undefined) {
   const [lead] = await db
     .select({
       id: leads.id,
@@ -314,12 +327,63 @@ async function lockLead(db: Database, actor: Actor, id: string) {
       unassignedReason: leads.unassignedReason,
     })
     .from(leads)
-    .where(and(eq(leads.id, id), leadScope(actor)))
+    .where(and(eq(leads.id, id), scope))
     .limit(1)
     .for("update");
   if (!lead) throw new NotFoundError();
   return lead;
 }
+
+/**
+ * Travas de toda mutação de lead, na ordem global usuários → lead (a mesma
+ * dos triggers do 003 e de users.service; a inversão lead → vendedor causava
+ * o deadlock P11 com a desativação/troca de equipe do vendedor):
+ *   1. lê o lead (com escopo, sem trava) só para saber o responsável atual;
+ *   2. trava ator, responsável e vendedores de destino (lockUsersForChange);
+ *   3. trava as equipes do lead, do responsável e dos vendedores de destino
+ *      (lockTeamsForShare): o supervisor gravado nos eventos fica estável até
+ *      o COMMIT;
+ *   4. trava o lead (escopo de novo, FOR UPDATE).
+ * Se o responsável ou a equipe do lead mudaram entre 1 e 4, o conjunto
+ * travado não é mais o certo: a transação inteira é refeita
+ * (RetryTransactionError). Todas as decisões usam o lead travado, nunca a
+ * leitura do passo 1.
+ *
+ * Exportada para o módulo de Vendas (createSale), que segue a mesma ordem e
+ * depois trava a venda e os itens.
+ */
+export async function lockLeadForChange(db: Database, actor: Actor, id: string, targetSellerIds: string[] = []) {
+  return lockLeadInOrder(db, actor, id, targetSellerIds, leadScope(actor));
+}
+
+/**
+ * Igual a lockLeadForChange, mas SEM o escopo de lead: para operações sobre
+ * uma venda já autorizada pelo escopo da VENDA (equipe atual do vendedor
+ * responsável), cujo lead pode estar com outro responsável ou em outra equipe.
+ */
+export async function lockLeadForSale(db: Database, actor: Actor, id: string, targetSellerIds: string[] = []) {
+  return lockLeadInOrder(db, actor, id, targetSellerIds, undefined);
+}
+
+async function lockLeadInOrder(db: Database, actor: Actor, id: string, targetSellerIds: string[], scope: SQL | undefined) {
+  const [seen] = await db
+    .select({ ownerId: leads.ownerId, teamId: leads.teamId })
+    .from(leads)
+    .where(and(eq(leads.id, id), scope))
+    .limit(1);
+  if (!seen) throw new NotFoundError();
+  const lockedUsers = await lockUsersForChange(db, actor, [seen.ownerId, ...targetSellerIds]);
+  await lockTeamsForShare(db, [
+    seen.teamId,
+    seen.ownerId ? lockedUsers.get(seen.ownerId)?.teamId : null,
+    ...targetSellerIds.map((sellerId) => lockedUsers.get(sellerId)?.teamId),
+  ]);
+  const lead = await lockLead(db, id, scope);
+  if (lead.ownerId !== seen.ownerId || lead.teamId !== seen.teamId) throw new RetryTransactionError();
+  return lead;
+}
+
+export type LockedLead = Awaited<ReturnType<typeof lockLead>>;
 
 async function currentCycle(db: Database, leadId: string): Promise<{ id: string; number: number }> {
   const [cycle] = await db
@@ -341,15 +405,25 @@ async function latestCycle(db: Database, leadId: string): Promise<{ id: string; 
   return cycle;
 }
 
+/** Vendedor de equipe inativa não recebe leads novos (regularizar a equipe ou o vendedor antes). */
+export const TARGET_TEAM_INACTIVE = "A equipe do vendedor selecionado está inativa.";
+
 /**
- * Vendedor escolhido para transferência, redistribuição ou recuperação:
- * SELLER ativo, com equipe. SUPERVISOR só escolhe vendedores da própria
- * equipe; ADMIN escolhe de qualquer equipe.
+ * Vendedor escolhido para transferência, redistribuição ou recuperação (ele e
+ * a equipe dele já travados por lockLeadForChange: a leitura não muda até o
+ * COMMIT): SELLER ativo, com equipe ATIVA. SUPERVISOR só escolhe vendedores da
+ * própria equipe; ADMIN escolhe de qualquer equipe.
  */
-async function loadTargetSeller(db: Database, actor: Actor, sellerId: string): Promise<{ id: string; teamId: string }> {
+async function loadTargetSeller(
+  db: Database,
+  actor: Actor,
+  sellerId: string,
+  field = "toSellerId",
+): Promise<{ id: string; teamId: string }> {
   const [seller] = await db
-    .select({ id: users.id, role: users.role, active: users.active, teamId: users.teamId })
+    .select({ id: users.id, role: users.role, active: users.active, teamId: users.teamId, teamActive: teams.active })
     .from(users)
+    .leftJoin(teams, eq(teams.id, users.teamId))
     .where(eq(users.id, sellerId))
     .limit(1);
   const allowed =
@@ -359,8 +433,9 @@ async function loadTargetSeller(db: Database, actor: Actor, sellerId: string): P
     (actor.role === "ADMIN" || seller.teamId === actor.supervisedTeamId);
   if (!allowed) {
     const message = actor.role === "ADMIN" ? "Selecione um vendedor ativo." : "Selecione um vendedor ativo da sua equipe.";
-    throw new ValidationError(message, { toSellerId: [message] });
+    throw new ValidationError(message, { [field]: [message] });
   }
+  if (!seller.teamActive) throw new ValidationError(TARGET_TEAM_INACTIVE, { [field]: [TARGET_TEAM_INACTIVE] });
   return { id: seller.id, teamId: seller.teamId! };
 }
 
@@ -468,6 +543,7 @@ export async function getLeadTimeline(ctx: ServiceContext, rawId: unknown): Prom
       fromSupervisorName: fromSupervisorUser.name,
       unassignedReason: leadEvents.unassignedReason,
       note: leadNotes.body,
+      saleId: leadEvents.saleId,
       metadata: leadEvents.metadata,
     })
     .from(leadEvents)
@@ -569,28 +645,49 @@ export async function getNegotiationBlock({ db, actor }: ServiceContext): Promis
 }
 
 // ---------------------------------------------------------------------------
-// Cadastro (SELLER)
+// Cadastro (SELLER, SUPERVISOR, ADMIN — C41)
 // ---------------------------------------------------------------------------
 
 /**
- * Cadastra um lead na carteira do próprio vendedor, na etapa Lead Cadastrado,
- * com o ciclo 1. Telefone já existente (ativo, sem responsável ou na Lixeira)
- * → LeadAlreadyExistsError. A unicidade é garantida pela constraint do banco,
- * inclusive entre cadastros simultâneos.
+ * Cadastra um lead na etapa Lead Cadastrado, com o ciclo 1. SELLER: na
+ * própria carteira (equipe dele). SUPERVISOR/ADMIN: na carteira do vendedor
+ * escolhido, com as mesmas regras da transferência (SUPERVISOR só da equipe
+ * que lidera; ADMIN qualquer um; vendedor ativo de equipe ativa); a equipe do
+ * lead é a do vendedor. Telefone já existente (ativo, sem responsável ou na
+ * Lixeira) → LeadAlreadyExistsError. A unicidade é garantida pela constraint
+ * do banco, inclusive entre cadastros simultâneos.
  */
 export async function createLead(ctx: ServiceContext, input: unknown): Promise<LeadView> {
   const { db, actor } = ctx;
   assertPermission(actor, "leads:create");
   const data = parseInput(createLeadSchema, input);
-  const teamId = actor.teamId;
-  if (!teamId) throw new ValidationError("Você não está vinculado a uma equipe. Procure o administrador.");
+  const sellerActor = actor.role === "SELLER";
+  if (sellerActor) {
+    if (data.sellerId !== undefined && data.sellerId !== actor.userId) {
+      throw new ValidationError(LEAD_SELLER_SELF_ONLY, { sellerId: [LEAD_SELLER_SELF_ONLY] });
+    }
+    if (!actor.teamId) throw new ValidationError("Você não está vinculado a uma equipe. Procure o administrador.");
+  } else if (!data.sellerId) {
+    throw new ValidationError(LEAD_SELLER_REQUIRED, { sellerId: [LEAD_SELLER_REQUIRED] });
+  }
+  const ownerId = sellerActor ? actor.userId : data.sellerId!;
   await assertNoOverdueNegotiation(db, actor);
 
   const duplicate = await findDuplicate(db, data.phone);
   if (duplicate) throw new LeadAlreadyExistsError(duplicate);
 
   try {
-    const id = await db.transaction(async (tx) => {
+    const id = await runTransaction(db, async (tx) => {
+      // Mesma ordem das demais mutações: usuários → equipe (o supervisor
+      // gravado no evento fica estável até o COMMIT) → lead.
+      await lockUsersForChange(tx, actor, [ownerId]);
+      const teamId = sellerActor ? actor.teamId! : (await loadTargetSeller(tx, actor, ownerId, "sellerId")).teamId;
+      const team = (await lockTeamsForShare(tx, [teamId])).get(teamId);
+      // Vendedor de equipe inativa não recebe leads novos.
+      if (!team?.active) {
+        if (sellerActor) throw new ValidationError(OWN_TEAM_INACTIVE);
+        throw new ValidationError(TARGET_TEAM_INACTIVE, { sellerId: [TARGET_TEAM_INACTIVE] });
+      }
       const [course] = await tx.select({ active: courses.active }).from(courses).where(eq(courses.id, data.interestCourseId)).limit(1);
       if (!course?.active) {
         throw new ValidationError("Selecione um curso ativo.", { interestCourseId: ["Selecione um curso ativo."] });
@@ -602,14 +699,14 @@ export async function createLead(ctx: ServiceContext, input: unknown): Promise<L
           name: data.name,
           phone: data.phone,
           interestCourseId: data.interestCourseId,
-          ownerId: actor.userId,
+          ownerId,
           teamId,
           createdBy: actor.userId,
         })
         .returning({ id: leads.id });
       const [cycle] = await tx
         .insert(leadCycles)
-        .values({ leadId: lead.id, number: 1, kind: "INITIAL", assignedSellerId: actor.userId, teamId, startedBy: actor.userId })
+        .values({ leadId: lead.id, number: 1, kind: "INITIAL", assignedSellerId: ownerId, teamId, startedBy: actor.userId })
         .returning({ id: leadCycles.id });
       await recordLeadEvents(tx, [
         {
@@ -618,7 +715,7 @@ export async function createLead(ctx: ServiceContext, input: unknown): Promise<L
           type: "CREATED",
           actorId: actor.userId,
           stage: "NEW",
-          ownerId: actor.userId,
+          ownerId,
           teamId,
           supervisorId: await supervisorOf(tx, teamId),
         },
@@ -668,8 +765,8 @@ export async function editLead(ctx: ServiceContext, rawId: unknown, input: unkno
   const data = parseInput(editLeadSchema, input);
 
   try {
-    await db.transaction(async (tx) => {
-      const lead = await lockLead(tx, actor, id);
+    await runTransaction(db, async (tx) => {
+      const lead = await lockLeadForChange(tx, actor, id);
       if (lead.status === "TRASHED") throw new ValidationError("Lead na Lixeira não pode ser editado. Recupere-o primeiro.");
       assertSellerMayChange(actor, lead);
 
@@ -735,8 +832,8 @@ export async function addLeadNote({ db, actor }: ServiceContext, rawId: unknown,
   const id = parseInput(idSchema, rawId);
   const { body } = parseInput(noteSchema, input);
 
-  await db.transaction(async (tx) => {
-    const lead = await lockLead(tx, actor, id);
+  await runTransaction(db, async (tx) => {
+    const lead = await lockLeadForChange(tx, actor, id);
     assertSellerMayChange(actor, lead);
     const cycle = await currentCycle(tx, lead.id);
     const [note] = await tx
@@ -783,8 +880,8 @@ export async function moveLeadStage({ db, actor }: ServiceContext, rawId: unknow
   const id = parseInput(idSchema, rawId);
   const { toStage } = parseInput(moveStageSchema, input);
 
-  await db.transaction(async (tx) => {
-    const lead = await lockLead(tx, actor, id);
+  await runTransaction(db, async (tx) => {
+    const lead = await lockLeadForChange(tx, actor, id);
     // A própria negociação vencida pode ser movida; as outras ficam travadas.
     await assertNoOverdueNegotiation(tx, actor, lead.id);
 
@@ -842,8 +939,8 @@ export async function transferLead({ db, actor }: ServiceContext, rawId: unknown
   const id = parseInput(idSchema, rawId);
   const { toSellerId } = parseInput(sellerChoiceSchema, input);
 
-  await db.transaction(async (tx) => {
-    const lead = await lockLead(tx, actor, id);
+  await runTransaction(db, async (tx) => {
+    const lead = await lockLeadForChange(tx, actor, id, [toSellerId]);
     if (lead.status !== "ACTIVE") throw new ValidationError("Lead na Lixeira não pode ser transferido. Recupere-o primeiro.");
     if (lead.stage === "CLOSED") throw new ValidationError("Lead em Fechamento não pode ser transferido.");
     const seller = await loadTargetSeller(tx, actor, toSellerId);
@@ -890,8 +987,8 @@ export async function redistributeLead({ db, actor }: ServiceContext, rawId: unk
   const id = parseInput(idSchema, rawId);
   const { toSellerId } = parseInput(sellerChoiceSchema, input);
 
-  await db.transaction(async (tx) => {
-    const lead = await lockLead(tx, actor, id);
+  await runTransaction(db, async (tx) => {
+    const lead = await lockLeadForChange(tx, actor, id, [toSellerId]);
     const followUp3Expired =
       lead.status === "ACTIVE" && lead.stage === "FOLLOW_UP_3" && lead.stageDueAt !== null && lead.stageDueAt < new Date();
     if (!followUp3Expired) throw new ValidationError("Só é possível redistribuir leads com Follow-up 3 vencido.");
@@ -911,8 +1008,8 @@ export async function trashLead({ db, actor }: ServiceContext, rawId: unknown): 
   assertPermission(actor, "leads:trash");
   const id = parseInput(idSchema, rawId);
 
-  await db.transaction(async (tx) => {
-    const lead = await lockLead(tx, actor, id);
+  await runTransaction(db, async (tx) => {
+    const lead = await lockLeadForChange(tx, actor, id);
     if (lead.status === "TRASHED") throw new ValidationError("O lead já está na Lixeira.");
     if (lead.stage === "CLOSED") throw new ValidationError("Lead em Fechamento não pode ir para a Lixeira.");
 
@@ -946,8 +1043,8 @@ export async function restoreLead({ db, actor }: ServiceContext, rawId: unknown,
   const id = parseInput(idSchema, rawId);
   const { toSellerId } = parseInput(sellerChoiceSchema, input);
 
-  await db.transaction(async (tx) => {
-    const lead = await lockLead(tx, actor, id);
+  await runTransaction(db, async (tx) => {
+    const lead = await lockLeadForChange(tx, actor, id, [toSellerId]);
     if (lead.status !== "TRASHED") throw new ValidationError("O lead não está na Lixeira.");
     const seller = await loadTargetSeller(tx, actor, toSellerId);
     const last = await latestCycle(tx, lead.id);
@@ -1003,3 +1100,183 @@ async function startReworkCycle(
     },
   ]);
 }
+
+// ---------------------------------------------------------------------------
+// Integração com Vendas (uso interno do módulo de vendas)
+// ---------------------------------------------------------------------------
+// Chamadas dentro da transação da operação de venda, com o lead travado
+// (lockLeadForChange/lockLeadForSale) e DEPOIS de gravar a venda
+// (lead_events.sale_id referencia a venda do mesmo lead). Não fazem checagem
+// de permissão: quem chama já fez.
+
+export type SaleLeadEvent = "SALE_CREATED" | "SALE_REACTIVATED" | "SALE_SELLER_CHANGED";
+
+/**
+ * Venda válida (nova, reativada ou com novo responsável) no lead:
+ *   - lead ainda não fechado (só em criação/reativação): encerra o ciclo
+ *     aberto (WON) e vai para Fechamento, sem prazo, preservando o histórico;
+ *   - lead já em Fechamento: continua em Fechamento, no mesmo ciclo;
+ *   - o responsável passa a ser o vendedor da venda, na equipe atual dele
+ *     (sai da fila, se estava sem responsável);
+ *   - grava o evento (retrato depois do fato, com de → para do que mudou).
+ *     Troca de responsável que não muda nada no lead não gera evento.
+ */
+export async function applySaleToLead(
+  tx: Database,
+  actor: Actor,
+  lead: LockedLead,
+  seller: { id: string; teamId: string },
+  saleId: string,
+  type: SaleLeadEvent,
+  metadata: Record<string, unknown> = {},
+): Promise<void> {
+  const closing = lead.stage !== "CLOSED";
+  const ownerChanged = lead.ownerId !== seller.id;
+  const teamChanged = lead.teamId !== seller.teamId;
+  if (type === "SALE_SELLER_CHANGED" && !closing && !ownerChanged && !teamChanged) return;
+
+  let cycleId: string;
+  if (closing) {
+    const cycle = await currentCycle(tx, lead.id);
+    await tx
+      .update(leadCycles)
+      .set({ endedAt: sql`now()`, endedBy: actor.userId, endReason: "WON" })
+      .where(eq(leadCycles.id, cycle.id));
+    cycleId = cycle.id;
+  } else {
+    cycleId = (await latestCycle(tx, lead.id)).id;
+  }
+
+  if (closing || ownerChanged || teamChanged) {
+    await tx
+      .update(leads)
+      .set({
+        ...(closing ? { stage: "CLOSED" as const, stageEnteredAt: sql`now()`, stageDueAt: null } : {}),
+        ownerId: seller.id,
+        teamId: seller.teamId,
+        unassignedAt: null,
+        unassignedReason: null,
+      })
+      .where(eq(leads.id, lead.id));
+  }
+
+  const [fromSupervisorId, supervisorId] = await Promise.all([supervisorOf(tx, lead.teamId), supervisorOf(tx, seller.teamId)]);
+  await recordLeadEvents(tx, [
+    {
+      leadId: lead.id,
+      cycleId,
+      type,
+      actorId: actor.userId,
+      stage: "CLOSED",
+      fromStage: closing ? lead.stage : null,
+      ownerId: seller.id,
+      fromOwnerId: ownerChanged ? lead.ownerId : null,
+      teamId: seller.teamId,
+      fromTeamId: teamChanged ? lead.teamId : null,
+      supervisorId,
+      fromSupervisorId: teamChanged ? fromSupervisorId : null,
+      saleId,
+      metadata,
+    },
+  ]);
+}
+
+/** O que o estorno de uma venda faz com o lead (decidido ANTES de gravar). */
+export type SaleReversalPlan =
+  /** Ainda há outra venda válida: o lead continua em Fechamento com o mesmo responsável. */
+  | { kind: "KEEP_CLOSED" }
+  /** Última venda válida, responsável ativo e elegível: novo ciclo REOPENED com ele. */
+  | { kind: "REOPEN"; ownerId: string }
+  /** Última venda válida, responsável inativo: novo ciclo REOPENED, lead na fila do supervisor. */
+  | { kind: "REOPEN_TO_QUEUE"; previousOwnerId: string };
+
+/** Estorno da última venda sem regra definida para o responsável atual (não é improvisado). */
+export const REVERSAL_NEEDS_VALID_OWNER =
+  "Para estornar a última venda válida, o responsável atual do lead precisa ser um vendedor ativo da equipe do lead " +
+  "(ou estar inativo, com a equipe do lead ativa). Troque o responsável da venda por um vendedor ativo de equipe ativa e tente novamente.";
+
+/**
+ * Decide o efeito do estorno no lead (lead em Fechamento, travado, assim como
+ * o responsável e as equipes dele). Última venda válida:
+ *   - responsável SELLER ativo, da mesma equipe do lead, com equipe ativa →
+ *     reabre com ele;
+ *   - responsável inativo e equipe do lead ativa → reabre na fila do
+ *     supervisor (mesmo tratamento da desativação de vendedor, C12);
+ *   - qualquer outro caso (responsável ativo em outra equipe ou em equipe
+ *     inativa; equipe do lead inativa) → recusado: não há regra confirmada.
+ */
+export async function planSaleReversal(tx: Database, lead: LockedLead, otherActiveSales: number): Promise<SaleReversalPlan> {
+  if (otherActiveSales > 0) return { kind: "KEEP_CLOSED" };
+  const ownerId = lead.ownerId!; // lead em Fechamento sempre tem responsável (CHECK leads_closed_has_owner)
+  const [owner] = await tx
+    .select({ role: users.role, active: users.active, teamId: users.teamId })
+    .from(users)
+    .where(eq(users.id, ownerId))
+    .limit(1);
+  const [leadTeam] = await tx.select({ active: teams.active }).from(teams).where(eq(teams.id, lead.teamId)).limit(1);
+  if (!leadTeam?.active) throw new ConflictError(REVERSAL_NEEDS_VALID_OWNER);
+  if (owner?.role === "SELLER" && owner.active && owner.teamId === lead.teamId) return { kind: "REOPEN", ownerId };
+  if (owner && !owner.active) return { kind: "REOPEN_TO_QUEUE", previousOwnerId: ownerId };
+  throw new ConflictError(REVERSAL_NEEDS_VALID_OWNER);
+}
+
+/**
+ * Estorno no lead, conforme o plano:
+ *   - KEEP_CLOSED: só o evento SALE_REVERSED (mesmo ciclo, mesma etapa);
+ *   - REOPEN / REOPEN_TO_QUEUE: novo ciclo REOPENED (número seguinte,
+ *     atribuído ao responsável), lead em Lead cadastrado sem prazo e evento
+ *     SALE_REVERSED no ciclo novo. Na fila, o lead fica sem responsável
+ *     (OWNER_DEACTIVATED) e um evento UNASSIGNED registra isso — o banco exige
+ *     responsável preenchido em eventos SALE_* (lead_events_sale_has_owner).
+ */
+export async function applySaleReversalToLead(
+  tx: Database,
+  actor: Actor,
+  lead: LockedLead,
+  saleId: string,
+  plan: SaleReversalPlan,
+): Promise<void> {
+  const supervisorId = await supervisorOf(tx, lead.teamId);
+  const base = { leadId: lead.id, actorId: actor.userId, teamId: lead.teamId, supervisorId };
+
+  if (plan.kind === "KEEP_CLOSED") {
+    const cycle = await latestCycle(tx, lead.id);
+    await recordLeadEvents(tx, [{ ...base, cycleId: cycle.id, type: "SALE_REVERSED", stage: "CLOSED", ownerId: lead.ownerId, saleId }]);
+    return;
+  }
+
+  const ownerId = plan.kind === "REOPEN" ? plan.ownerId : plan.previousOwnerId;
+  const last = await latestCycle(tx, lead.id);
+  const [cycle] = await tx
+    .insert(leadCycles)
+    .values({ leadId: lead.id, number: last.number + 1, kind: "REOPENED", assignedSellerId: ownerId, teamId: lead.teamId, startedBy: actor.userId })
+    .returning({ id: leadCycles.id });
+  const toQueue = plan.kind === "REOPEN_TO_QUEUE";
+  await tx
+    .update(leads)
+    .set({
+      stage: "NEW",
+      stageEnteredAt: sql`now()`,
+      stageDueAt: null,
+      ...(toQueue ? { ownerId: null, unassignedAt: sql`now()`, unassignedReason: "OWNER_DEACTIVATED" as const } : {}),
+    })
+    .where(eq(leads.id, lead.id));
+
+  const events: LeadEventInput[] = [
+    { ...base, cycleId: cycle.id, type: "SALE_REVERSED", stage: "NEW", fromStage: "CLOSED", ownerId, saleId },
+  ];
+  if (toQueue) {
+    events.push({
+      ...base,
+      cycleId: cycle.id,
+      type: "UNASSIGNED",
+      stage: "NEW",
+      ownerId: null,
+      fromOwnerId: ownerId,
+      unassignedReason: "OWNER_DEACTIVATED",
+      metadata: { afterSaleReversal: true },
+    });
+  }
+  await recordLeadEvents(tx, events);
+}
+

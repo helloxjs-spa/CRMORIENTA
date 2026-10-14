@@ -29,18 +29,26 @@ describe("RBAC — matriz de permissões", () => {
     }
   });
 
-  it("vendedor não transfere, redistribui, recupera nem estorna", () => {
-    for (const permission of ["leads:transfer", "leads:redistribute", "leads:restore", "sales:reverse"] as const) {
+  it("vendedor não transfere, redistribui, recupera, estorna nem reativa venda", () => {
+    for (const permission of ["leads:transfer", "leads:redistribute", "leads:restore", "sales:reverse", "sales:reactivate"] as const) {
       expect(hasPermission(sellerA1, permission)).toBe(false);
     }
   });
 
-  it("somente o vendedor possui carteira comercial (leads e vendas próprios)", () => {
-    for (const permission of ["leads:create", "sales:create"] as const) {
-      expect(hasPermission(sellerA1, permission)).toBe(true);
-      expect(hasPermission(supA, permission)).toBe(false);
-      expect(hasPermission(admin, permission)).toBe(false);
+  it("cadastro de leads (C41): SELLER, SUPERVISOR e ADMIN; papel desconhecido é negado", () => {
+    for (const actor of [sellerA1, supA, supWithoutTeam, admin]) expect(hasPermission(actor, "leads:create")).toBe(true);
+    const unknownRole = { ...sellerA1, role: "VISITANTE" } as unknown as Actor;
+    expect(hasPermission(unknownRole, "leads:create")).toBe(false);
+  });
+
+  it("vendas (C36): todos registram e consultam (com escopo); só o admin escolhe a data", () => {
+    for (const actor of [admin, supA, sellerA1]) {
+      expect(hasPermission(actor, "sales:create")).toBe(true);
+      expect(hasPermission(actor, "sales:view")).toBe(true);
     }
+    expect(hasPermission(admin, "sales:setDate")).toBe(true);
+    expect(hasPermission(supA, "sales:setDate")).toBe(false);
+    expect(hasPermission(sellerA1, "sales:setDate")).toBe(false);
   });
 
   it("leads: todos veem (com escopo); só o vendedor registra observação; supervisor e admin operam a carteira", () => {
@@ -61,10 +69,21 @@ describe("RBAC — matriz de permissões", () => {
     }
   });
 
-  it("somente o supervisor estorna vendas (admin não)", () => {
-    expect(hasPermission(supA, "sales:reverse")).toBe(true);
-    expect(hasPermission(admin, "sales:reverse")).toBe(false);
-    expect(hasPermission(sellerA1, "sales:reverse")).toBe(false);
+  it("edição de venda (C36): todos editam itens; só supervisor e admin mexem no financeiro, no responsável e em venda estornada", () => {
+    for (const actor of [admin, supA, sellerA1]) expect(hasPermission(actor, "sales:edit")).toBe(true);
+    for (const permission of ["sales:editFinancial", "sales:changeSeller", "sales:editReversed"] as const) {
+      expect(hasPermission(admin, permission)).toBe(true);
+      expect(hasPermission(supA, permission)).toBe(true);
+      expect(hasPermission(sellerA1, permission)).toBe(false);
+    }
+  });
+
+  it("supervisor e admin estornam e reativam vendas (C36, substitui C1); vendedor não", () => {
+    for (const permission of ["sales:reverse", "sales:reactivate"] as const) {
+      expect(hasPermission(supA, permission)).toBe(true);
+      expect(hasPermission(admin, permission)).toBe(true);
+      expect(hasPermission(sellerA1, permission)).toBe(false);
+    }
   });
 
   it("todos os perfis veem o ranking e marcam parcelas como pagas", () => {

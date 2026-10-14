@@ -31,6 +31,8 @@ Regras:
 |---|---|---|
 | [`001_supabase_initial_schema.sql`](migrations/001_supabase_initial_schema.sql) | Fundação (users, teams, sessions, audit_events), cursos e custos, com `institution_name` | ✅ 2026-10-08 |
 | [`002_leads.sql`](migrations/002_leads.sql) | Leads: `leads`, `lead_cycles`, `lead_notes`, `lead_events`, 6 enums, telefone canônico único (inclusive na Lixeira), triggers de integridade (responsável SELLER ativo da mesma equipe, coerência lead × ciclos, append-only, sem DELETE/TRUNCATE) e o trigger `users_seller_open_leads` em `users` | ✅ 2026-10-10 |
+| [`003_sales.sql`](migrations/003_sales.sql) | Vendas: `sales`, `sale_items`, `sale_events`, 3 enums, `REOPENED` e eventos `SALE_*` nos leads, `lead_events.sale_id`, auditoria calculada e conferida pelo banco no COMMIT, coerência lead × vendas, exigência de READ COMMITTED. SHA-256 `843e66a127c38a35a66a8067eeb1444374115482127e96279fd947cf6ba7eabd` (CRLF; `.gitattributes` preserva os bytes) | ✅ |
+| [`004_sale_item_prices.sql`](migrations/004_sale_item_prices.sql) | Preço de venda por item (`sale_items.price_cents > 0`), total da venda = soma dos itens atuais (conferido no COMMIT), correção de preço no próprio item preservando custo e comissão, com antes/depois no `UPDATED` (`itemsRepriced`). Só aplica com `sales`/`sale_items` vazias (guard sob trava exclusiva). SHA-256 `1233df8bef5270363d95500166e3662b0015707b17581e2237d50749bad21267` | ✅ executada e verificada (`price_nullable = NO`, `snapshot_ok = true`, `total_check_ok = true`, `anon_exec = false`) |
 
 ## Testes e banco local
 

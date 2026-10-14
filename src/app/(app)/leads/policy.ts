@@ -13,6 +13,17 @@ export type LeadActionKey = "edit" | "note" | "move" | "transfer" | "redistribut
 
 type LeadState = Pick<LeadView, "status" | "stage" | "ownerId" | "queueReason" | "stageDueAt">;
 
+/**
+ * Como a tela oferece o cadastro de lead (C41): "own" = SELLER na própria
+ * carteira (precisa de equipe); "chooseSeller" = SUPERVISOR/ADMIN escolhem o
+ * vendedor responsável; null = sem cadastro. O serviço revalida tudo.
+ */
+export function leadCreationMode(actor: Pick<Actor, "role" | "teamId">): "own" | "chooseSeller" | null {
+  if (!hasPermission(actor, "leads:create")) return null;
+  if (actor.role === "SELLER") return actor.teamId ? "own" : null;
+  return "chooseSeller";
+}
+
 /** Situação do vendedor logado: tem negociação vencida? (bloqueia mover OUTROS leads). */
 export type SellerSituation = { negotiationBlocked: boolean };
 

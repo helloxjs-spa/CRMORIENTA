@@ -1,13 +1,20 @@
-import { AlertTriangle, Hourglass, Lock, Phone, SearchX, Trash2, UserX } from "lucide-react";
+import { AlertTriangle, Hourglass, Lock, Phone, SearchX, ShoppingCart, Trash2, UserX } from "lucide-react";
+import Link from "next/link";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
+import { ButtonLink } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDateTime, formatRelativeDateTime } from "@/lib/format";
+import { formatBRL } from "@/lib/money";
 import { formatPhone } from "@/lib/phone";
+import { formatSaleDate, paymentLabel } from "@/lib/sales";
+import { hasPermission } from "@/server/authz/permissions";
 import type { ServiceContext } from "@/server/context";
 import { ForbiddenError, NotFoundError, ValidationError } from "@/server/errors";
 import { getLead, getLeadTimeline } from "@/server/modules/leads/leads.service";
+import { listSales } from "@/server/modules/sales/sales.service";
+import { SaleStatusBadge } from "../vendas/sale-badges";
 import { DeadlineBadge, StageBadge } from "./lead-badges";
 import { LeadAdminActions } from "./lead-actions";
 import { EditLeadDialog, type CourseChoice } from "./lead-dialogs";
@@ -73,7 +80,9 @@ export async function LeadDetail({
     }
     throw error;
   }
-  const [timeline, now] = [await getLeadTimeline(ctx, id), new Date()];
+  // Vendas do lead no escopo do ator (sem custos); só o que ele pode abrir.
+  const [timeline, relatedSales, now] = [await getLeadTimeline(ctx, id), await listSales(ctx, { leadId: lead.id, pageSize: 25 }), new Date()];
+  const canSell = lead.status === "ACTIVE" && hasPermission(ctx.actor, "sales:create");
   const actions = leadActionsFor(lead, ctx.actor, situation);
   const targets = moveTargetsFor(lead, ctx.actor, situation, now);
   const isSeller = ctx.actor.role === "SELLER";
@@ -97,8 +106,14 @@ export async function LeadDetail({
           {lead.status === "ACTIVE" && <DeadlineBadge lead={lead} now={now} withDetail={false} />}
         </div>
         <MoveStageButtons leadId={lead.id} targets={targets} />
-        {(actions.includes("edit") || actions.some((a) => a !== "edit" && a !== "note")) && (
+        {(canSell || actions.includes("edit") || actions.some((a) => a !== "edit" && a !== "note")) && (
           <div className="flex flex-wrap gap-2">
+            {canSell && (
+              <ButtonLink href={`/vendas/nova?lead=${lead.id}`} size="sm">
+                <ShoppingCart className="size-4" aria-hidden />
+                Registrar venda
+              </ButtonLink>
+            )}
             {actions.includes("edit") && (
               <EditLeadDialog
                 lead={{ id: lead.id, name: lead.name, phone: lead.phone, interestCourseId: lead.interestCourseId }}
@@ -164,9 +179,33 @@ export async function LeadDetail({
         </section>
       )}
 
+      {relatedSales.total > 0 && (
+        <section aria-label="Vendas do lead">
+          <h3 className="mb-2 text-sm font-semibold text-slate-900">Vendas</h3>
+          <ul className="divide-y divide-slate-100 rounded-xl ring-1 ring-slate-200">
+            {relatedSales.items.map((sale) => (
+              <li key={sale.id}>
+                <Link href={`/vendas/${sale.id}`} className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50">
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium text-slate-900">{sale.courseNames}</span>
+                    <span className="block text-xs text-slate-500">
+                      {formatSaleDate(sale.saleDate)} · {paymentLabel(sale.paymentMethod, sale.installmentCount)} · {sale.sellerName}
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 flex-col items-end gap-1">
+                    <span className="text-sm font-semibold tabular-nums text-slate-900">{formatBRL(sale.totalCents)}</span>
+                    <SaleStatusBadge status={sale.status} />
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section aria-label="Histórico">
         <h3 className="mb-3 text-sm font-semibold text-slate-900">Histórico</h3>
-        <LeadTimeline events={timeline} now={now} />
+        <LeadTimeline events={timeline} now={now} visibleSaleIds={new Set(relatedSales.items.map((sale) => sale.id))} />
       </section>
     </div>
   );

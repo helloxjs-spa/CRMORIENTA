@@ -7,12 +7,14 @@ import { assertPermission } from "@/server/authz/permissions";
 import type { ServiceContext } from "@/server/context";
 import { isUniqueViolation } from "@/server/db/errors";
 import { teams, USER_ROLES, users, type UserRole } from "@/server/db/schema";
+import { runTransaction } from "@/server/db/transaction";
 import type { Database } from "@/server/db/types";
 import { ConflictError, NotFoundError, ValidationError } from "@/server/errors";
 import { recordAudit } from "@/server/modules/audit/audit.service";
 import {
   countOpenLeadsOfSeller,
   moveOpenLeadsWithSeller,
+  lockTeamsForShare,
   unassignOpenLeadsOfSeller,
 } from "@/server/modules/leads/leads.internal";
 import { emailSchema, idSchema, nameSchema, parseInput, passwordSchema } from "@/server/validation";
@@ -100,6 +102,16 @@ export async function getUser({ db, actor }: ServiceContext, rawId: unknown): Pr
     (actor.role === "SUPERVISOR" && actor.supervisedTeamId !== null && user.teamId === actor.supervisedTeamId);
   if (!inScope) throw new NotFoundError();
   return user;
+}
+
+/**
+ * Trava a linha do usuário antes de decidir com base nela (FOR NO KEY UPDATE,
+ * o mesmo modo do UPDATE que virá). É a primeira trava das operações que
+ * mexem no vendedor e depois nos leads dele: ordem usuário → leads, a mesma
+ * das mutações de lead (ver lockUsersForChange em leads.internal.ts).
+ */
+async function lockUser(db: Database, id: string): Promise<void> {
+  await db.select({ id: users.id }).from(users).where(eq(users.id, id)).for("no key update");
 }
 
 async function findUserView(db: Database, id: string): Promise<UserView | undefined> {
@@ -209,7 +221,10 @@ export async function setUserActive(
     throw new ValidationError("Você não pode desativar o próprio usuário.");
   }
 
-  await db.transaction(async (tx) => {
+  // READ COMMITTED (exigido pelo 003 para desativar vendedor) e nova
+  // tentativa em caso de deadlock/serialização.
+  await runTransaction(db, async (tx) => {
+    await lockUser(tx, id);
     const user = await findUserView(tx, id);
     if (!user) throw new NotFoundError();
     if (user.active === active) return;
@@ -221,6 +236,17 @@ export async function setUserActive(
           `Este supervisor lidera a equipe "${ledTeam.name}". Defina outro supervisor para a equipe antes de desativá-lo.`,
         );
       }
+    }
+
+    // Equipe do vendedor (FOR SHARE, depois do usuário e antes dos leads):
+    // - desativação: fixa o supervisor gravado nos eventos UNASSIGNED até o COMMIT;
+    // - reativação: vendedor de equipe INATIVA não é reativado (regularizar
+    //   reativando a equipe ou transferindo o vendedor). Com a equipe travada,
+    //   uma desativação concorrente dela espera esta transação (e então vê o
+    //   vendedor ativo) ou termina antes (e esta transação vê a equipe inativa).
+    if (user.role === "SELLER" && user.teamId) {
+      const team = (await lockTeamsForShare(tx, [user.teamId])).get(user.teamId);
+      if (active && !team?.active) throw new ValidationError(SELLER_TEAM_INACTIVE);
     }
 
     await tx.update(users).set({ active }).where(eq(users.id, id));
@@ -263,6 +289,9 @@ export async function resetUserPassword({ db, actor }: ServiceContext, rawId: un
 
 const changeTeamSchema = z.strictObject({ teamId: idSchema.nullable() });
 
+export const SELLER_TEAM_INACTIVE =
+  "A equipe deste vendedor está inativa. Reative a equipe ou transfira o vendedor para uma equipe ativa antes de reativá-lo.";
+
 export const SELLER_HAS_OPEN_LEADS =
   "Este vendedor possui leads em aberto. Transfira os leads antes de removê-lo da equipe.";
 
@@ -280,11 +309,18 @@ export async function changeSellerTeam(
   const sellerId = parseInput(idSchema, rawSellerId);
   const { teamId } = parseInput(changeTeamSchema, input);
 
-  await db.transaction(async (tx) => {
+  // READ COMMITTED (exigido pelo 003 para trocar vendedor de equipe) e nova
+  // tentativa em caso de deadlock/serialização.
+  await runTransaction(db, async (tx) => {
+    await lockUser(tx, sellerId);
     const seller = await findUserView(tx, sellerId);
     if (!seller) throw new NotFoundError();
     if (seller.role !== "SELLER") throw new ValidationError("Apenas vendedores podem ser movidos entre equipes.");
     if (seller.teamId === teamId) return;
+    // Equipes de origem e destino (FOR SHARE, depois do vendedor e antes dos
+    // leads): a desativação da equipe destino espera esta troca (ou a troca vê
+    // a equipe já inativa), e os supervisores gravados nos eventos ficam estáveis.
+    await lockTeamsForShare(tx, [seller.teamId, teamId]);
     if (teamId) await assertActiveTeam(tx, teamId);
     if (!teamId && (await countOpenLeadsOfSeller(tx, sellerId)) > 0) throw new ConflictError(SELLER_HAS_OPEN_LEADS);
 
@@ -321,8 +357,13 @@ async function teamSnapshot(db: Database, teamId: string | null): Promise<TeamSn
   return row ?? null;
 }
 
+/**
+ * Equipe de destino de um vendedor: existe e está ativa. Trava a equipe
+ * (FOR SHARE) até o COMMIT, para que uma desativação concorrente espere esta
+ * transação ou seja vista por ela.
+ */
 async function assertActiveTeam(db: Database, teamId: string): Promise<void> {
-  const [team] = await db.select({ active: teams.active }).from(teams).where(eq(teams.id, teamId)).limit(1);
+  const [team] = await db.select({ active: teams.active }).from(teams).where(eq(teams.id, teamId)).limit(1).for("share");
   if (!team) throw new ValidationError("Equipe não encontrada.", { teamId: ["Equipe não encontrada."] });
   if (!team.active) throw new ValidationError("A equipe está inativa.", { teamId: ["A equipe está inativa."] });
 }

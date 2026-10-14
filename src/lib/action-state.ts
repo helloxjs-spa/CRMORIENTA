@@ -1,7 +1,7 @@
 /** Resultado padronizado de toda Server Action consumida via useActionState. */
 export type ActionState =
   | { status: "idle" }
-  | { status: "success"; message: string; at: number }
+  | { status: "success"; message: string; at: number; redirectTo?: string }
   | { status: "error"; message: string; fieldErrors: Record<string, string[]>; at: number };
 
 export type ServerAction = (prev: ActionState, formData: FormData) => Promise<ActionState>;

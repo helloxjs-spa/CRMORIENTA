@@ -11,11 +11,15 @@ import { requireServiceContext } from "./session";
  * 3. Converte erros de domínio em ActionState para a interface; erros
  *    inesperados são logados e nunca têm detalhes expostos ao cliente.
  */
-export async function runAction(fn: (ctx: ServiceContext) => Promise<string>): Promise<ActionState> {
+/** Sucesso com destino: a tela navega para `redirectTo` (ex.: a venda criada). */
+export type ActionResult = { message: string; redirectTo?: string };
+
+export async function runAction(fn: (ctx: ServiceContext) => Promise<string | ActionResult>): Promise<ActionState> {
   const ctx = await requireServiceContext();
   try {
-    const message = await fn(ctx);
-    return { status: "success", message, at: Date.now() };
+    const result = await fn(ctx);
+    if (typeof result === "string") return { status: "success", message: result, at: Date.now() };
+    return { status: "success", message: result.message, redirectTo: result.redirectTo, at: Date.now() };
   } catch (error) {
     return toErrorState(error);
   }

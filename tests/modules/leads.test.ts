@@ -82,12 +82,89 @@ describe("cadastro", () => {
     });
   });
 
-  it("somente o vendedor cadastra (supervisor e admin não têm carteira)", async () => {
-    for (const userId of [org.ids.supA, org.ids.admin]) {
-      await expect(
-        createLead(await org.ctx(userId), { name: "X Y", phone: nextPhone(), interestCourseId: courseId }),
-      ).rejects.toBeInstanceOf(ForbiddenError);
-    }
+  it("supervisor cadastra para vendedor da própria equipe (C41): carteira do vendedor, autor = supervisor", async () => {
+    const lead = await createLead(await org.ctx(org.ids.supA), {
+      name: "Lead do Supervisor",
+      phone: nextPhone(),
+      interestCourseId: courseId,
+      sellerId: org.ids.sellerA2,
+    });
+    expect(lead).toMatchObject({ ownerId: org.ids.sellerA2, teamId: org.ids.teamA, stage: "NEW", cycleNumber: 1 });
+    expect(await rowOf(lead.id)).toMatchObject({ createdBy: org.ids.supA, ownerId: org.ids.sellerA2 });
+    const [cycle] = await cyclesOf(lead.id);
+    expect(cycle).toMatchObject({ assignedSellerId: org.ids.sellerA2, teamId: org.ids.teamA, startedBy: org.ids.supA });
+    const [event] = await eventsOf(lead.id);
+    expect(event).toMatchObject({ type: "CREATED", actorId: org.ids.supA, ownerId: org.ids.sellerA2, teamId: org.ids.teamA, supervisorId: org.ids.supA });
+  });
+
+  it("admin cadastra para vendedor ativo de qualquer equipe (C41); a equipe do lead é a do vendedor", async () => {
+    const lead = await createLead(await org.ctx(org.ids.admin), {
+      name: "Lead do Admin",
+      phone: nextPhone(),
+      interestCourseId: courseId,
+      sellerId: org.ids.sellerB1,
+    });
+    expect(lead).toMatchObject({ ownerId: org.ids.sellerB1, teamId: org.ids.teamB, stage: "NEW" });
+    const [event] = await eventsOf(lead.id);
+    expect(event).toMatchObject({ actorId: org.ids.admin, ownerId: org.ids.sellerB1, teamId: org.ids.teamB, supervisorId: org.ids.supB });
+  });
+
+  it("supervisor/admin: vendedor obrigatório; supervisor não escolhe vendedor de outra equipe; nunca não-vendedor", async () => {
+    const base = { name: "Sem Dono", interestCourseId: courseId };
+    const expectFieldError = async (userId: string, input: Record<string, unknown>) => {
+      const error = (await createLead(await org.ctx(userId), { ...base, phone: nextPhone(), ...input }).catch((e: unknown) => e)) as ValidationError;
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(Object.keys(error.fieldErrors)).toEqual(["sellerId"]);
+    };
+    await expectFieldError(org.ids.supA, {});
+    await expectFieldError(org.ids.admin, {});
+    await expectFieldError(org.ids.supA, { sellerId: org.ids.sellerB1 });
+    await expectFieldError(org.ids.supB, { sellerId: org.ids.sellerA1 });
+    await expectFieldError(org.ids.admin, { sellerId: org.ids.supA });
+    const supWithoutTeam = await insertUser(handle, { name: "Supervisor Sem Equipe C41", role: "SUPERVISOR" });
+    await expectFieldError(supWithoutTeam, { sellerId: org.ids.sellerA1 });
+  });
+
+  it("vendedor inativo ou de equipe inativa não recebe o lead cadastrado por supervisor/admin", async () => {
+    const inactive = await insertUser(handle, { name: "Vendedor Inativo C41", role: "SELLER", teamId: org.ids.teamA, active: false });
+    const inactiveError = (await createLead(await org.ctx(org.ids.admin), {
+      name: "Para Inativo",
+      phone: nextPhone(),
+      interestCourseId: courseId,
+      sellerId: inactive,
+    }).catch((e: unknown) => e)) as ValidationError;
+    expect(inactiveError).toBeInstanceOf(ValidationError);
+    expect(inactiveError.fieldErrors.sellerId).toEqual(["Selecione um vendedor ativo."]);
+
+    const [teamC] = await handle.db.insert(teams).values({ name: "Equipe Inativa C41", active: false }).returning({ id: teams.id });
+    const sellerC = await insertUser(handle, { name: "Vendedor Equipe Inativa C41", role: "SELLER", teamId: teamC.id });
+    const teamError = (await createLead(await org.ctx(org.ids.admin), {
+      name: "Para Equipe Inativa",
+      phone: nextPhone(),
+      interestCourseId: courseId,
+      sellerId: sellerC,
+    }).catch((e: unknown) => e)) as ValidationError;
+    expect(teamError).toBeInstanceOf(ValidationError);
+    expect(teamError.message).toBe("A equipe do vendedor selecionado está inativa.");
+  });
+
+  it("vendedor não cadastra na carteira de outro, mas pode informar a si mesmo", async () => {
+    const ctx = await org.ctx(org.ids.sellerA1);
+    const error = (await createLead(ctx, { name: "Para Colega", phone: nextPhone(), interestCourseId: courseId, sellerId: org.ids.sellerA2 }).catch(
+      (e: unknown) => e,
+    )) as ValidationError;
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.fieldErrors.sellerId).toEqual(["Você cadastra leads apenas na sua carteira."]);
+    const own = await createLead(ctx, { name: "Para Mim", phone: nextPhone(), interestCourseId: courseId, sellerId: org.ids.sellerA1 });
+    expect(own).toMatchObject({ ownerId: org.ids.sellerA1, teamId: org.ids.teamA });
+  });
+
+  it("supervisor/admin: telefone duplicado continua bloqueado", async () => {
+    const phone = nextPhone();
+    await createLead(await org.ctx(org.ids.sellerA1), { name: "Original", phone, interestCourseId: courseId });
+    await expect(
+      createLead(await org.ctx(org.ids.admin), { name: "Copia", phone, interestCourseId: courseId, sellerId: org.ids.sellerB1 }),
+    ).rejects.toBeInstanceOf(LeadAlreadyExistsError);
   });
 
   it("valida nome, telefone, curso ativo e recusa campos não previstos", async () => {

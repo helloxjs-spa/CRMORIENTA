@@ -11,6 +11,9 @@ import { useToast } from "./toast";
  * Modal com formulário ligado a uma Server Action, aberto por quem o usa
  * (ex.: um item de menu). Igual ao ActionDialog, mas sem botão próprio.
  * Cada abertura remonta o formulário (erros e valores limpos).
+ * `renderAlert` (opcional) substitui o aviso de erro padrão quando devolve
+ * algo; nesse caso o botão de envio some (nova tentativa só depois do que o
+ * aviso pedir, ex.: atualizar os dados).
  */
 export function ActionModal({
   open,
@@ -20,6 +23,7 @@ export function ActionModal({
   action,
   submitLabel = "Salvar",
   submitVariant = "primary",
+  renderAlert,
   children,
 }: {
   open: boolean;
@@ -29,6 +33,7 @@ export function ActionModal({
   action: ServerAction;
   submitLabel?: string;
   submitVariant?: ButtonVariant;
+  renderAlert?: (state: ActionState) => ReactNode;
   children: (fieldErrors: Record<string, string[]>) => ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -56,6 +61,7 @@ export function ActionModal({
           action={action}
           submitLabel={submitLabel}
           submitVariant={submitVariant}
+          renderAlert={renderAlert}
           onClose={onClose}
         >
           {children}
@@ -72,6 +78,7 @@ function ModalForm({
   action,
   submitLabel,
   submitVariant,
+  renderAlert,
   onClose,
   children,
 }: {
@@ -81,11 +88,13 @@ function ModalForm({
   action: ServerAction;
   submitLabel: string;
   submitVariant: ButtonVariant;
+  renderAlert?: (state: ActionState) => ReactNode;
   onClose: () => void;
   children: (fieldErrors: Record<string, string[]>) => ReactNode;
 }) {
   const [state, formAction] = useActionState<ActionState, FormData>(action, IDLE);
   const toast = useToast();
+  const alert = renderAlert?.(state);
 
   useEffect(() => {
     if (state.status === "success") {
@@ -108,14 +117,14 @@ function ModalForm({
         </button>
       </div>
       <div className="space-y-4 px-6 py-5">
-        <FormAlert message={state.status === "error" && Object.keys(state.fieldErrors).length === 0 ? state.message : undefined} />
+        {alert || <FormAlert message={state.status === "error" && Object.keys(state.fieldErrors).length === 0 ? state.message : undefined} />}
         {children(fieldErrorsOf(state))}
       </div>
       <div className="flex justify-end gap-2 rounded-b-2xl border-t border-slate-100 bg-slate-50 px-6 py-3">
         <Button variant="secondary" onClick={onClose}>
           Cancelar
         </Button>
-        <SubmitButton variant={submitVariant}>{submitLabel}</SubmitButton>
+        {!alert && <SubmitButton variant={submitVariant}>{submitLabel}</SubmitButton>}
       </div>
     </form>
   );
