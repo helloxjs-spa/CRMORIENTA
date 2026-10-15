@@ -30,9 +30,22 @@ export type DatabaseHandle = {
  * - pglite://<diretório>          → Postgres embutido persistido em disco.
  * - pglite://memory              → Postgres embutido em memória (testes).
  */
-export function connectDatabase(url: string = process.env.DATABASE_URL || DEFAULT_DATABASE_URL): DatabaseHandle {
+export function connectDatabase(
+  url: string = process.env.DATABASE_URL || DEFAULT_DATABASE_URL,
+  options: { perRequest?: boolean } = {},
+): DatabaseHandle {
   if (url.startsWith("postgres://") || url.startsWith("postgresql://")) {
-    const pool = new Pool({ connectionString: url, max: 10 });
+    // perRequest (Cloudflare Workers): o pool vive só durante uma requisição e
+    // cada conexão é fechada depois de devolvida (o Hyperdrive faz o pool real).
+    const pool = new Pool(options.perRequest ? { connectionString: url, max: 5, maxUses: 1 } : { connectionString: url, max: 10 });
+    // Erro numa conexão OCIOSA (servidor encerrou, socket fechado) chega como
+    // evento do pool; sem listener ele vira exceção não tratada. A conexão já
+    // foi descartada e a próxima consulta abre outra. No Workers, o fechamento
+    // normal (maxUses: 1) sempre termina com "socket closed": não é falha.
+    pool.on("error", (error) => {
+      if (options.perRequest && /socket has been closed/i.test(error.message)) return;
+      console.error("[db] erro em conexão ociosa:", error.message);
+    });
     const db = drizzlePg(pool, { schema, casing: "snake_case" }) as unknown as Database;
     return {
       db,

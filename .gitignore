@@ -43,3 +43,8 @@ next-env.d.ts
 
 # banco local (PGlite)
 /.data
+
+# cloudflare (OpenNext / wrangler)
+/.open-next
+/.wrangler
+.dev.vars*

@@ -1,0 +1,31 @@
+{
+  // Deploy na Cloudflare (Workers + OpenNext). Guia: docs/DEPLOY_CLOUDFLARE.md
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "crm-polo-educacional",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-10-01",
+  // nodejs_compat: pg (sockets TCP), node:crypto (scrypt, sessões) e AsyncLocalStorage.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  },
+  // Variáveis NÃO secretas. Segredos (se houver) vão por `wrangler secret put`.
+  "vars": {
+    "SESSION_TTL_HOURS": "12"
+  },
+  // Conexão com o PostgreSQL do Supabase via Hyperdrive (pool na borda).
+  // 1) npx wrangler hyperdrive create crm-polo-db --connection-string="<Session pooler do Supabase>" --caching-disabled
+  // 2) cole o id retornado abaixo.
+  // Preview local (`npm run cf:preview`): defina no terminal
+  // CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE com um Postgres LOCAL.
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "COLE_AQUI_O_ID_DO_HYPERDRIVE"
+    }
+  ]
+}

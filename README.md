@@ -15,6 +15,10 @@ CRM web para a operação comercial de um polo educacional: equipes, vendedores,
 
 Os módulos comerciais seguintes aparecem no menu como "em breve".
 
+## Deploy
+
+Produção na **Cloudflare** (Workers + OpenNext + Hyperdrive): passo a passo, variáveis e secrets em [`docs/DEPLOY_CLOUDFLARE.md`](docs/DEPLOY_CLOUDFLARE.md).
+
 ## Banco de dados
 
 O banco oficial é o **PostgreSQL do Supabase**, usado só como Postgres hospedado (a autenticação é própria do CRM, não usa Supabase Auth).
