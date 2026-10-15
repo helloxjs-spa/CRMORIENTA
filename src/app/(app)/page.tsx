@@ -7,16 +7,27 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { Table, Tbody, Td, Th } from "@/components/ui/table";
 import { formatLongDate, ROLE_LABELS } from "@/lib/format";
+import { parsePeriodParams } from "@/lib/ranking";
+import { BUSINESS_RULES } from "@/server/config/business-rules";
 import type { ServiceContext } from "@/server/context";
 import { getMyTeam, getTeam, listTeams } from "@/server/modules/teams/teams.service";
 import { listUsers } from "@/server/modules/users/users.service";
 import { requireServiceContext } from "@/server/next/session";
+import { CommercialDashboard } from "./commercial-dashboard";
 
 export const metadata: Metadata = { title: "Início" };
 
-export default async function HomePage() {
+/** Mês atual ("AAAA-MM") no fuso único do negócio. */
+function currentMonth(now = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: BUSINESS_RULES.timezone, year: "numeric", month: "2-digit" }).format(now);
+}
+
+/** Início: dashboard comercial (§17) do período na URL + estrutura da organização. */
+export default async function HomePage({ searchParams }: PageProps<"/">) {
   const ctx = await requireServiceContext();
   const firstName = ctx.actor.name.split(" ")[0];
+  const month = currentMonth();
+  const { period, periodError } = parsePeriodParams(await searchParams, month);
 
   return (
     <>
@@ -28,6 +39,8 @@ export default async function HomePage() {
           </span>
         }
       />
+      <CommercialDashboard ctx={ctx} period={period} periodError={periodError} currentMonth={month} />
+      <h2 className="mb-3 mt-8 text-sm font-semibold text-slate-900">Estrutura</h2>
       {ctx.actor.role === "ADMIN" && <AdminOverview ctx={ctx} />}
       {ctx.actor.role === "SUPERVISOR" && <SupervisorOverview ctx={ctx} />}
       {ctx.actor.role === "SELLER" && <SellerOverview ctx={ctx} />}
@@ -131,13 +144,9 @@ async function SellerOverview({ ctx }: { ctx: ServiceContext }) {
   );
 }
 
-const UPCOMING = [
-  "Leads com bloqueio de telefone duplicado e transferência com histórico",
-  "Kanban comercial, follow-ups com prazo e bloqueio por negociação vencida",
-  "Retrabalho, lixeira e recuperação de leads",
-  "Parcelas e comissões",
-  "Estornos, ranking, dashboards, certificados e relatórios",
-];
+// Só o que ainda não foi entregue (Leads, Kanban, Vendas, Estornos, Ranking e
+// Dashboard já estão no menu).
+const UPCOMING = ["Parcelas: geração e controle de recebimento", "Certificados", "Relatórios e exportação"];
 
 function UpcomingModules() {
   return (

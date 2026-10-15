@@ -131,3 +131,11 @@ describe("filtros na URL", () => {
     expect(toSaleFilters(params, { canFilterSeller: true, canFilterTeam: true })).toMatchObject({ sellerId: ids.seller, teamId: ids.team });
   });
 });
+
+describe("aba Estornos", () => {
+  it("abre a listagem filtrada por estornadas, mantendo os demais filtros e voltando à página 1", () => {
+    const params = parseSalesParams({ q: "Ana", pagina: "3", pagamento: "pix" });
+    expect(salesHref({ ...params, status: "REVERSED", page: 1 })).toBe("/vendas?q=Ana&situacao=estornadas&pagamento=pix");
+    expect(salesHref({ ...parseSalesParams({ situacao: "estornadas" }), status: undefined, page: 1 })).toBe("/vendas");
+  });
+});

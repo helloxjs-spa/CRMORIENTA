@@ -79,6 +79,17 @@ export type SaleListItem = {
   createdAt: Date;
 };
 
+/**
+ * Último estorno de uma venda estornada (área de Estornos), lido de
+ * `sale_events`: o evento REVERSED de maior id. Só se estorna venda válida e só
+ * se reativa venda estornada, então numa venda hoje estornada esse é o estorno
+ * vigente; estornos anteriores (antes de uma reativação) continuam no histórico.
+ */
+export type SaleReversalInfo = { occurredAt: Date; actorName: string; reason: string };
+
+/** Item da listagem; `lastReversal` só vem preenchido para venda estornada. */
+export type SaleListEntry = SaleListItem & { lastReversal: SaleReversalInfo | null };
+
 export type SaleItemView = {
   id: string;
   courseId: string;
@@ -771,7 +782,7 @@ function selectSales(db: Database) {
  * vendedor/equipe fora do escopo devolve vazio); a contagem usa as mesmas
  * condições.
  */
-export async function listSales({ db, actor }: ServiceContext, rawFilters: unknown = {}): Promise<Paginated<SaleListItem>> {
+export async function listSales({ db, actor }: ServiceContext, rawFilters: unknown = {}): Promise<Paginated<SaleListEntry>> {
   assertPermission(actor, "sales:view");
   const filters = parseInput(listFiltersSchema, rawFilters);
 
@@ -803,7 +814,28 @@ export async function listSales({ db, actor }: ServiceContext, rawFilters: unkno
           .orderBy(desc(sales.saleDate), desc(sales.createdAt), desc(sales.id))
           .limit(pageSize)
           .offset((page - 1) * pageSize);
-  return { items, page, pageSize, total, totalPages };
+  // Só vendas desta página, já filtradas pelo escopo acima.
+  const reversals = await lastReversals(db, items.filter((item) => item.status === "REVERSED").map((item) => item.id));
+  return { items: items.map((item) => ({ ...item, lastReversal: reversals.get(item.id) ?? null })), page, pageSize, total, totalPages };
+}
+
+/** Último evento REVERSED (maior id) de cada venda informada. Não altera nem apaga eventos. */
+async function lastReversals(db: Database, saleIds: string[]): Promise<Map<string, SaleReversalInfo>> {
+  if (saleIds.length === 0) return new Map();
+  const reversalActor = alias(users, "sale_reversal_actor");
+  const rows = await db
+    .selectDistinctOn([saleEvents.saleId], {
+      saleId: saleEvents.saleId,
+      occurredAt: saleEvents.occurredAt,
+      actorName: reversalActor.name,
+      reason: saleEvents.reason,
+    })
+    .from(saleEvents)
+    .innerJoin(reversalActor, eq(reversalActor.id, saleEvents.actorId))
+    .where(and(inArray(saleEvents.saleId, saleIds), eq(saleEvents.type, "REVERSED")))
+    .orderBy(saleEvents.saleId, desc(saleEvents.id));
+  // O banco exige motivo em todo REVERSED (sale_events_reason_required).
+  return new Map(rows.map((row) => [row.saleId, { occurredAt: row.occurredAt, actorName: row.actorName, reason: row.reason ?? "" }]));
 }
 
 /** Venda no escopo do ator, SEM custos de bolsa. Fora do escopo → NotFound. */

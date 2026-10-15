@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
-import { Plus } from "lucide-react";
+import { Plus, Receipt, Undo2 } from "lucide-react";
 import Link from "next/link";
 import { Suspense, type ReactNode } from "react";
 import { buttonClasses, ButtonLink } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/form";
 import { PageHeader } from "@/components/ui/page-header";
+import { cn } from "@/lib/cn";
 import { PAYMENT_METHOD_LABELS, SALE_PAGE_SIZES, SALE_STATUS_LABELS } from "@/lib/sales";
 import { hasPermission } from "@/server/authz/permissions";
 import { listLeadSellers } from "@/server/modules/leads/leads.service";
@@ -54,6 +55,16 @@ export default async function SalesPage({ searchParams }: PageProps<"/vendas">) 
           )
         }
       />
+
+      {/* Estornos (§15): a mesma listagem, com o mesmo escopo, já filtrada por vendas estornadas. */}
+      <nav className="mb-4 flex gap-1 overflow-x-auto border-b border-slate-200" aria-label="Vendas e estornos">
+        <Tab href={salesHref({ ...params, status: undefined, page: 1 })} active={params.status !== "REVERSED"} icon={Receipt}>
+          Vendas
+        </Tab>
+        <Tab href={salesHref({ ...params, status: "REVERSED", page: 1 })} active={params.status === "REVERSED"} icon={Undo2}>
+          Estornos
+        </Tab>
+      </nav>
 
       <Card className="mb-4 p-4">
         <form action="/vendas" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4" role="search" aria-label="Filtrar vendas">
@@ -137,6 +148,23 @@ export default async function SalesPage({ searchParams }: PageProps<"/vendas">) 
 }
 
 const slug = <T extends string>(map: Record<string, T>, value: T) => Object.keys(map).find((k) => map[k] === value) ?? "";
+
+function Tab({ href, active, icon: Icon, children }: { href: string; active: boolean; icon: typeof Receipt; children: ReactNode }) {
+  return (
+    <Link
+      href={href}
+      scroll={false}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "-mb-px inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-medium transition-colors",
+        active ? "border-brand-800 text-brand-800" : "border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800",
+      )}
+    >
+      <Icon className="size-4" aria-hidden />
+      {children}
+    </Link>
+  );
+}
 
 function FilterField({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
   return (

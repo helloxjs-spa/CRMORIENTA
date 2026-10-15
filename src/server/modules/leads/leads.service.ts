@@ -2,9 +2,10 @@ import { and, asc, count, desc, eq, ilike, isNotNull, isNull, like, lt, or, sql,
 import { alias } from "drizzle-orm/pg-core";
 import { z } from "zod";
 import { parseBrazilianPhone, phoneSearchDigits } from "@/lib/phone";
-import { canTransition, LEAD_PAGE_SIZES, STAGE_LABELS, STAGES_WITH_DEADLINE, type LeadQueueReason } from "@/lib/leads";
+import { conversionRate } from "@/lib/dashboard";
+import { canTransition, LEAD_PAGE_SIZES, STAGE_LABELS, STAGE_ORDER, STAGES_WITH_DEADLINE, type LeadQueueReason } from "@/lib/leads";
 import type { Actor } from "@/server/authz/actor";
-import { assertPermission } from "@/server/authz/permissions";
+import { assertPermission, hasPermission } from "@/server/authz/permissions";
 import { ownedScope } from "@/server/authz/scope";
 import { BUSINESS_RULES } from "@/server/config/business-rules";
 import type { ServiceContext } from "@/server/context";
@@ -17,6 +18,7 @@ import {
   leadEvents,
   leadNotes,
   leads,
+  sales,
   teams,
   users,
   type LeadCycleKind,
@@ -593,6 +595,96 @@ export async function listLeadSellers({ db, actor }: ServiceContext): Promise<Le
     .leftJoin(teams, eq(teams.id, users.teamId))
     .where(and(eq(users.role, "SELLER"), actor.role === "SUPERVISOR" ? eq(users.teamId, actor.supervisedTeamId!) : undefined))
     .orderBy(asc(teams.name), asc(users.name));
+}
+
+// ---------------------------------------------------------------------------
+// Indicadores do Dashboard (§17) — mesmo escopo de leitura de listLeads
+// ---------------------------------------------------------------------------
+
+export type LeadIndicators = {
+  /** Leads cadastrados no período (data de cadastro no fuso do negócio). */
+  createdInPeriod: number;
+  /** Desses, quantos têm pelo menos uma venda válida (cada lead conta uma vez). */
+  convertedInPeriod: number;
+  /**
+   * Desses, quantos estão hoje na Lixeira (já incluídos em createdInPeriod; só
+   * para quem vê leads na Lixeira — SELLER sempre 0). Lead na Lixeira nunca tem
+   * venda válida (o banco exige lead ativo em Fechamento), então não entra no
+   * numerador da conversão.
+   */
+  trashedInPeriod: number;
+  /** Denominador da conversão: leads cadastrados no período que NÃO estão hoje na Lixeira (#28). */
+  conversionBase: number;
+  /** % = convertidos ÷ conversionBase × 100; null sem leads elegíveis. */
+  conversionRate: number | null;
+  /** Carteira ATUAL (leads ativos agora), por etapa — independe do período. */
+  portfolio: { stage: LeadStage; count: number }[];
+  alerts: {
+    /** Follow-up 1/2/3 com prazo vencido (inclui Follow-up 3 aguardando o supervisor). */
+    followUpsOverdue: number;
+    negotiationsOverdue: number;
+    /** Fila de decisão do supervisor/admin; null para quem não decide (SELLER). */
+    awaitingDecision: DecisionQueueCounts | null;
+  };
+};
+
+const indicatorPeriodSchema = z
+  .strictObject({ dateFrom: z.iso.date({ error: "Data inválida." }), dateTo: z.iso.date({ error: "Data inválida." }) })
+  .refine((value) => value.dateFrom <= value.dateTo, { path: ["dateTo"], message: "A data inicial deve ser igual ou anterior à final." });
+
+/**
+ * Indicadores de leads no escopo de leitura do ator (o mesmo de listLeads:
+ * SELLER os próprios ativos; SUPERVISOR os da equipe que lidera; ADMIN todos).
+ * Cadastrados no período × carteira atual são números separados. Conversão =
+ * leads cadastrados no período com venda válida (qualquer data, cada lead uma
+ * vez) ÷ leads cadastrados no período que não estão hoje na Lixeira (#28).
+ */
+export async function getLeadIndicators({ db, actor }: ServiceContext, input: unknown): Promise<LeadIndicators> {
+  assertPermission(actor, "leads:view");
+  const { dateFrom, dateTo } = parseInput(indicatorPeriodSchema, input);
+  const scope = leadScope(actor);
+  const createdDay = sql`(${leads.createdAt} at time zone ${BUSINESS_RULES.timezone})::date`;
+  const hasValidSale = sql`exists (select 1 from ${sales} where ${sales.leadId} = ${leads.id} and ${sales.status} = 'ACTIVE')`;
+
+  const [created] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      converted: sql<number>`(count(*) filter (where ${hasValidSale}))::int`,
+      trashed: sql<number>`(count(*) filter (where ${leads.status} = 'TRASHED'))::int`,
+      eligible: sql<number>`(count(*) filter (where ${leads.status} = 'ACTIVE'))::int`,
+    })
+    .from(leads)
+    .where(and(scope, sql`${createdDay} between ${dateFrom}::date and ${dateTo}::date`));
+
+  const byStage = await db
+    .select({ stage: leads.stage, count: sql<number>`count(*)::int` })
+    .from(leads)
+    .where(and(scope, eq(leads.status, "ACTIVE")))
+    .groupBy(leads.stage);
+  const counts = new Map(byStage.map((row) => [row.stage, row.count]));
+
+  const overdue = and(eq(leads.status, "ACTIVE"), isNotNull(leads.ownerId), lt(leads.stageDueAt, sql`now()`));
+  const [alerts] = await db
+    .select({
+      followUpsOverdue: sql<number>`(count(*) filter (where ${leads.stage} in ('FOLLOW_UP_1', 'FOLLOW_UP_2', 'FOLLOW_UP_3')))::int`,
+      negotiationsOverdue: sql<number>`(count(*) filter (where ${leads.stage} = 'NEGOTIATION'))::int`,
+    })
+    .from(leads)
+    .where(and(scope, overdue));
+
+  return {
+    createdInPeriod: created.total,
+    convertedInPeriod: created.converted,
+    trashedInPeriod: created.trashed,
+    conversionBase: created.eligible,
+    conversionRate: conversionRate(created.converted, created.eligible),
+    portfolio: STAGE_ORDER.map((stage) => ({ stage, count: counts.get(stage) ?? 0 })),
+    alerts: {
+      followUpsOverdue: alerts.followUpsOverdue,
+      negotiationsOverdue: alerts.negotiationsOverdue,
+      awaitingDecision: hasPermission(actor, "leads:transfer") ? await countDecisionQueue({ db, actor }) : null,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

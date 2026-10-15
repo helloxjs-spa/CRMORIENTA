@@ -29,7 +29,7 @@ export function navigationFor(actor: Actor): NavSection[] {
     { label: "Kanban", href: "/kanban", icon: "kanban" },
     { label: "Vendas", href: "/vendas", icon: "sales" },
     { label: "Parcelas", href: "/parcelas", icon: "installments", soon: true },
-    { label: "Ranking", href: "/ranking", icon: "ranking", soon: true },
+    { label: "Ranking", href: "/ranking", icon: "ranking" },
     { label: "Certificados", href: "/certificados", icon: "certificates", soon: true },
   ];
   if (hasPermission(actor, "reports:export")) {

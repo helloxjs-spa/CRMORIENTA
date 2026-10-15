@@ -5,6 +5,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, Tbody, Td, Th } from "@/components/ui/table";
 import { cn } from "@/lib/cn";
+import { formatDateTime } from "@/lib/format";
 import { formatBRL } from "@/lib/money";
 import { formatSaleDate, paymentLabel, SALE_PAGE_SIZES } from "@/lib/sales";
 import type { ServiceContext } from "@/server/context";
@@ -18,8 +19,21 @@ export type SalesViewer = { canFilterSeller: boolean; canFilterTeam: boolean; sh
 /** Resultado paginado no banco (escopo, filtros, LIMIT/OFFSET no serviço). Sem custos. */
 export async function SalesResults({ ctx, params, viewer }: { ctx: ServiceContext; params: SalesParams; viewer: SalesViewer }) {
   const result = await listSales(ctx, toSaleFilters(params, viewer));
+  // Aba Estornos: mostra o último estorno de cada venda (data/hora, autor, motivo).
+  const reversals = params.status === "REVERSED";
 
   if (result.total === 0) {
+    if (reversals) {
+      return (
+        <Card>
+          <EmptyState
+            icon={SearchX}
+            title="Nenhuma venda estornada"
+            description="Vendas estornadas aparecem aqui com a data, o autor e o motivo do estorno. Ajuste os filtros para ver outras."
+          />
+        </Card>
+      );
+    }
     const filtered = hasSaleFilters(params);
     return (
       <Card>
@@ -51,7 +65,15 @@ export async function SalesResults({ ctx, params, viewer }: { ctx: ServiceContex
               {viewer.showSeller && <Th>Equipe</Th>}
               <Th>Pagamento</Th>
               <Th className="text-right">Total</Th>
-              <Th>Situação</Th>
+              {reversals ? (
+                <>
+                  <Th>Estornada em</Th>
+                  <Th>Por</Th>
+                  <Th>Motivo</Th>
+                </>
+              ) : (
+                <Th>Situação</Th>
+              )}
             </tr>
           </thead>
           <Tbody>
@@ -73,9 +95,21 @@ export async function SalesResults({ ctx, params, viewer }: { ctx: ServiceContex
                 {viewer.showSeller && <Td>{s.teamName}</Td>}
                 <Td>{paymentLabel(s.paymentMethod, s.installmentCount)}</Td>
                 <Td className="text-right font-medium tabular-nums text-slate-900">{formatBRL(s.totalCents)}</Td>
-                <Td>
-                  <SaleStatusBadge status={s.status} />
-                </Td>
+                {reversals ? (
+                  <>
+                    <Td className="tabular-nums text-slate-500">{s.lastReversal ? formatDateTime(s.lastReversal.occurredAt) : "—"}</Td>
+                    <Td>{s.lastReversal?.actorName ?? "—"}</Td>
+                    <Td>
+                      <span className="block max-w-64 truncate" title={s.lastReversal?.reason}>
+                        {s.lastReversal?.reason ?? "—"}
+                      </span>
+                    </Td>
+                  </>
+                ) : (
+                  <Td>
+                    <SaleStatusBadge status={s.status} />
+                  </Td>
+                )}
               </ClickableRow>
             ))}
           </Tbody>
@@ -103,6 +137,12 @@ export async function SalesResults({ ctx, params, viewer }: { ctx: ServiceContex
                 </span>
               )}
             </div>
+            {s.lastReversal && (
+              <p className="mt-2 text-xs text-slate-600">
+                Estornada em {formatDateTime(s.lastReversal.occurredAt)} por {s.lastReversal.actorName}:{" "}
+                <span className="italic">{s.lastReversal.reason}</span>
+              </p>
+            )}
           </li>
         ))}
       </ul>
