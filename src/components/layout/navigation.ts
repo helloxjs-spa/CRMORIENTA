@@ -28,12 +28,12 @@ export function navigationFor(actor: Actor): NavSection[] {
     { label: "Leads", href: "/leads", icon: "leads" },
     { label: "Kanban", href: "/kanban", icon: "kanban" },
     { label: "Vendas", href: "/vendas", icon: "sales" },
-    { label: "Parcelas", href: "/parcelas", icon: "installments", soon: true },
+    { label: "Parcelas", href: "/parcelas", icon: "installments" },
     { label: "Ranking", href: "/ranking", icon: "ranking" },
-    { label: "Certificados", href: "/certificados", icon: "certificates", soon: true },
+    { label: "Certificados", href: "/certificados", icon: "certificates" },
   ];
   if (hasPermission(actor, "reports:export")) {
-    commercial.push({ label: "Relatórios", href: "/relatorios", icon: "reports", soon: true });
+    commercial.push({ label: "Relatórios", href: "/relatorios", icon: "reports" });
   }
 
   const management: NavItem[] = [];

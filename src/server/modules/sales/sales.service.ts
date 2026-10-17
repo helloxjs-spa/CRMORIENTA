@@ -34,6 +34,13 @@ import {
   planSaleReversal,
   type SaleReversalPlan,
 } from "@/server/modules/leads/leads.service";
+import {
+  assertScheduleChangeable,
+  cancelOpenInstallments,
+  createInstallmentSchedule,
+  reopenCanceledInstallments,
+  replaceInstallmentSchedule,
+} from "@/server/modules/installments/installments.service";
 import { idSchema, parseInput } from "@/server/validation";
 
 /**
@@ -307,6 +314,15 @@ export async function createSale(ctx: ServiceContext, input: unknown): Promise<C
           addedBy: actor.userId,
         })),
       );
+      // Cartão: cronograma de parcelas (C52) na mesma transação; Pix: nenhum.
+      await createInstallmentSchedule(tx, {
+        id: data.requestId,
+        status: "ACTIVE",
+        saleDate,
+        totalCents,
+        paymentMethod: data.paymentMethod,
+        installmentCount: data.installmentCount ?? null,
+      });
       await applySaleToLead(tx, actor, lead, seller, data.requestId, "SALE_CREATED", {
         totalCents,
         paymentMethod: data.paymentMethod,
@@ -632,6 +648,14 @@ export async function updateSale(ctx: ServiceContext, rawId: unknown, input: unk
     if (Object.keys(changes).length === 0 && removeIds.length === 0 && reprices.length === 0 && toAdd.length === 0) {
       return { saleId: id, version: data.expectedVersion, changed: false };
     }
+    // Parcelas (C52): total, pagamento, quantidade ou data mudam → cronograma
+    // refeito; com parcela paga, a alteração inteira é recusada antes de gravar.
+    const reschedule =
+      changes.totalCents !== undefined ||
+      changes.paymentMethod !== undefined ||
+      changes.installmentCount !== undefined ||
+      changes.saleDate !== undefined;
+    if (reschedule) await assertScheduleChangeable(tx, id);
     if (Object.keys(changes).length > 0) await tx.update(sales).set(changes).where(eq(sales.id, id));
     if (removeIds.length > 0) {
       await tx.update(saleItems).set({ removedAt: sql`now()`, removedBy: actor.userId }).where(inArray(saleItems.id, removeIds));
@@ -652,6 +676,16 @@ export async function updateSale(ctx: ServiceContext, rawId: unknown, input: unk
           addedBy: actor.userId,
         })),
       );
+    }
+    if (reschedule) {
+      await replaceInstallmentSchedule(tx, {
+        id,
+        status: sale.status,
+        saleDate: changes.saleDate ?? sale.saleDate,
+        totalCents: newTotal,
+        paymentMethod,
+        installmentCount,
+      });
     }
     if (newSeller && sale.status === "ACTIVE") await applySaleToLead(tx, actor, lead, newSeller, id, "SALE_SELLER_CHANGED");
     // Por último: o banco calcula o antes/depois e o confere no COMMIT.
@@ -687,6 +721,7 @@ export async function reverseSale(ctx: ServiceContext, rawId: unknown, input: un
     const plan = await planSaleReversal(tx, lead, others);
 
     await tx.update(sales).set({ status: "REVERSED" }).where(eq(sales.id, id));
+    await cancelOpenInstallments(tx, id); // C52: as pagas continuam pagas
     await applySaleReversalToLead(tx, actor, lead, id, plan);
     const [event] = await tx
       .insert(saleEvents)
@@ -722,6 +757,7 @@ export async function reactivateSale(ctx: ServiceContext, rawId: unknown, input:
     }
 
     await tx.update(sales).set({ status: "ACTIVE" }).where(eq(sales.id, id));
+    await reopenCanceledInstallments(tx, id); // C52
     await applySaleToLead(tx, actor, lead, seller, id, "SALE_REACTIVATED");
     const [event] = await tx
       .insert(saleEvents)
@@ -785,18 +821,7 @@ function selectSales(db: Database) {
 export async function listSales({ db, actor }: ServiceContext, rawFilters: unknown = {}): Promise<Paginated<SaleListEntry>> {
   assertPermission(actor, "sales:view");
   const filters = parseInput(listFiltersSchema, rawFilters);
-
-  const conditions: (SQL | undefined)[] = [saleScope(actor)];
-  if (filters.status) conditions.push(eq(sales.status, filters.status));
-  if (filters.sellerId) conditions.push(eq(sales.sellerId, filters.sellerId));
-  // Equipe ATUAL do vendedor responsável (C50); `sales.team_id` é só histórico.
-  if (filters.teamId) conditions.push(eq(responsible.teamId, filters.teamId));
-  if (filters.leadId) conditions.push(eq(sales.leadId, filters.leadId));
-  if (filters.paymentMethod) conditions.push(eq(sales.paymentMethod, filters.paymentMethod));
-  if (filters.dateFrom) conditions.push(gte(sales.saleDate, filters.dateFrom));
-  if (filters.dateTo) conditions.push(lte(sales.saleDate, filters.dateTo));
-  if (filters.search) conditions.push(ilike(leads.name, `%${filters.search.replace(/[%_\\]/g, "\\$&")}%`));
-  const where = and(...conditions);
+  const where = saleListConditions(actor, filters);
 
   const [{ total }] = await db
     .select({ total: count() })
@@ -818,6 +843,101 @@ export async function listSales({ db, actor }: ServiceContext, rawFilters: unkno
   // Só vendas desta página, já filtradas pelo escopo acima.
   const reversals = await lastReversals(db, items.filter((item) => item.status === "REVERSED").map((item) => item.id));
   return { items: items.map((item) => ({ ...item, lastReversal: reversals.get(item.id) ?? null })), page, pageSize, total, totalPages };
+}
+
+/**
+ * Escopo + filtros da listagem de vendas (exige `responsible` e `leads` no
+ * FROM). Usado pela lista e pelos relatórios, para que os dois vejam sempre o
+ * mesmo conjunto de vendas.
+ */
+function saleListConditions(actor: Actor, filters: z.output<typeof listFiltersSchema>): SQL | undefined {
+  const conditions: (SQL | undefined)[] = [saleScope(actor)];
+  if (filters.status) conditions.push(eq(sales.status, filters.status));
+  if (filters.sellerId) conditions.push(eq(sales.sellerId, filters.sellerId));
+  // Equipe ATUAL do vendedor responsável (C50); `sales.team_id` é só histórico.
+  if (filters.teamId) conditions.push(eq(responsible.teamId, filters.teamId));
+  if (filters.leadId) conditions.push(eq(sales.leadId, filters.leadId));
+  if (filters.paymentMethod) conditions.push(eq(sales.paymentMethod, filters.paymentMethod));
+  if (filters.dateFrom) conditions.push(gte(sales.saleDate, filters.dateFrom));
+  if (filters.dateTo) conditions.push(lte(sales.saleDate, filters.dateTo));
+  if (filters.search) conditions.push(ilike(leads.name, `%${filters.search.replace(/[%_\\]/g, "\\$&")}%`));
+  return and(...conditions);
+}
+
+export type SaleItemReportRow = {
+  saleId: string;
+  saleDate: string;
+  status: SaleStatus;
+  leadName: string;
+  sellerId: string;
+  sellerName: string;
+  /** Equipe registrada na venda (histórico). */
+  teamName: string;
+  courseName: string;
+  institutionName: string;
+  priceCents: number;
+  commissionSnapshotCents: number;
+  /** Somente com `finance:viewCostAndProfit`. */
+  costSnapshotCents?: number;
+};
+
+/**
+ * Itens ATUAIS (não removidos) das vendas da listagem — mesmo escopo e mesmos
+ * filtros de listSales (sem paginação; `limit` é um teto técnico). O custo de
+ * bolsa só é lido para quem tem `finance:viewCostAndProfit`.
+ */
+export async function listSaleItemsForReport(
+  { db, actor }: ServiceContext,
+  rawFilters: unknown,
+  limit: number,
+): Promise<SaleItemReportRow[]> {
+  assertPermission(actor, "sales:view");
+  const filters = parseInput(listFiltersSchema, rawFilters);
+  const withCost = hasPermission(actor, "finance:viewCostAndProfit");
+  const rows = await db
+    .select({
+      saleId: sales.id,
+      saleDate: sales.saleDate,
+      status: sales.status,
+      leadName: leads.name,
+      sellerId: sales.sellerId,
+      sellerName: responsible.name,
+      teamName: teams.name,
+      courseName: courses.name,
+      institutionName: courses.institutionName,
+      priceCents: saleItems.priceCents,
+      commissionSnapshotCents: saleItems.commissionSnapshotCents,
+      ...(withCost ? { costSnapshotCents: saleItems.costSnapshotCents } : {}),
+    })
+    .from(saleItems)
+    .innerJoin(sales, eq(sales.id, saleItems.saleId))
+    .innerJoin(responsible, eq(responsible.id, sales.sellerId))
+    .innerJoin(leads, eq(leads.id, sales.leadId))
+    .innerJoin(teams, eq(teams.id, sales.teamId))
+    .innerJoin(courses, eq(courses.id, saleItems.courseId))
+    .where(and(isNull(saleItems.removedAt), saleListConditions(actor, filters)))
+    .orderBy(desc(sales.saleDate), desc(sales.createdAt), desc(sales.id), asc(saleItems.addedAt), asc(saleItems.id))
+    .limit(limit);
+  return rows;
+}
+
+/**
+ * Custo das bolsas de cada venda informada (soma dos snapshots dos itens
+ * atuais — a mesma regra de getSaleWithCost). Somente
+ * `finance:viewCostAndProfit`; vendas fora do escopo não entram.
+ */
+export async function getSalesCostTotals(ctx: ServiceContext, saleIds: string[]): Promise<Map<string, number>> {
+  assertPermission(ctx.actor, "finance:viewCostAndProfit");
+  if (saleIds.length === 0) return new Map();
+  const ids = parseInput(z.array(idSchema), saleIds);
+  const rows = await ctx.db
+    .select({ saleId: saleItems.saleId, costCents: sql<number>`coalesce(sum(${saleItems.costSnapshotCents}), 0)::bigint`.mapWith(Number) })
+    .from(saleItems)
+    .innerJoin(sales, eq(sales.id, saleItems.saleId))
+    .innerJoin(responsible, eq(responsible.id, sales.sellerId))
+    .where(and(inArray(saleItems.saleId, ids), isNull(saleItems.removedAt), saleScope(ctx.actor)))
+    .groupBy(saleItems.saleId);
+  return new Map(rows.map((row) => [row.saleId, row.costCents]));
 }
 
 /** Último evento REVERSED (maior id) de cada venda informada. Não altera nem apaga eventos. */

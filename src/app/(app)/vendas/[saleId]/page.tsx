@@ -10,12 +10,17 @@ import { formatDateTime } from "@/lib/format";
 import { formatBRL } from "@/lib/money";
 import { formatSaleDate, paymentLabel } from "@/lib/sales";
 import { hasPermission } from "@/server/authz/permissions";
+import { BUSINESS_RULES } from "@/server/config/business-rules";
+import { getSaleItemCertificates } from "@/server/modules/certificates/certificates.service";
+import { getSaleInstallments } from "@/server/modules/installments/installments.service";
 import { getSale, getSaleHistoryView, getSaleWithCost, type SaleItemView, type SaleItemWithCost, type SaleView } from "@/server/modules/sales/sales.service";
 import { orNotFound } from "@/server/next/page";
 import { requireServiceContext } from "@/server/next/session";
 import { saleActionsFor } from "../policy";
 import { SaleStatusBadge } from "../sale-badges";
 import { SaleHistory } from "../sale-history";
+import { InstallmentStatusBadge, MarkPaidButton } from "../../parcelas/installment-parts";
+import { CertificateDialog } from "./certificate-dialog";
 import { SaleStatusActions } from "./sale-status-actions";
 
 export const metadata: Metadata = { title: "Venda" };
@@ -44,6 +49,13 @@ export default async function SalePage({ params }: PageProps<"/vendas/[saleId]">
   const history = await getSaleHistoryView(ctx, sale.id);
   const actions = saleActionsFor(sale, ctx.actor);
   const now = new Date();
+  // Certificados (§18): um por curso (item); só itens de venda válida recebem novo registro (C51).
+  const canOperateCertificates = hasPermission(ctx.actor, "certificates:operate");
+  const certificates = canOperateCertificates ? await getSaleItemCertificates(ctx, sale.id) : {};
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: BUSINESS_RULES.timezone }).format(now);
+  // Parcelas (§12; C52): só cartão tem cronograma.
+  const installments =
+    sale.paymentMethod === "CARD" && hasPermission(ctx.actor, "installments:markPaid") ? await getSaleInstallments(ctx, sale.id) : null;
 
   return (
     <>
@@ -122,6 +134,7 @@ export default async function SalePage({ params }: PageProps<"/vendas/[saleId]">
                   <Th className="text-right">Comissão</Th>
                   {withCost && <Th className="text-right">Custo</Th>}
                   {withCost && <Th className="text-right">Lucro</Th>}
+                  {canOperateCertificates && <Th>Certificado</Th>}
                 </tr>
               </thead>
               <Tbody>
@@ -135,11 +148,65 @@ export default async function SalePage({ params }: PageProps<"/vendas/[saleId]">
                     <Td className="text-right tabular-nums">{formatBRL(item.commissionSnapshotCents)}</Td>
                     {withCost && <Td className="text-right tabular-nums">{formatBRL(item.costSnapshotCents ?? 0)}</Td>}
                     {withCost && <Td className="text-right tabular-nums">{formatBRL(item.profitCents ?? 0)}</Td>}
+                    {canOperateCertificates && (
+                      <Td className="whitespace-normal">
+                        {certificates[item.id] ? (
+                          <>
+                            <span className="text-slate-900">Entregue em {formatSaleDate(certificates[item.id].deliveredOn)}</span>
+                            <span className="block text-xs text-slate-500">
+                              Conclusão {formatSaleDate(certificates[item.id].completedOn)} · {certificates[item.id].certifier}
+                            </span>
+                          </>
+                        ) : sale.status === "ACTIVE" ? (
+                          <CertificateDialog saleItemId={item.id} courseName={item.courseName} today={today} />
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
+                      </Td>
+                    )}
                   </tr>
                 ))}
               </Tbody>
             </Table>
           </Card>
+
+          {installments && (
+            <Card>
+              <CardHeader title="Parcelas" description={`Cartão em ${sale.installmentCount}x · a 1ª vence um mês após a data da venda`} />
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>Parcela</Th>
+                    <Th>Vencimento</Th>
+                    <Th className="text-right">Valor</Th>
+                    <Th>Situação</Th>
+                    <Th>Pagamento</Th>
+                    <Th className="w-0" />
+                  </tr>
+                </thead>
+                <Tbody>
+                  {installments.map((p) => (
+                    <tr key={p.id}>
+                      <Td className="tabular-nums">
+                        {p.number}/{p.installmentCount}
+                      </Td>
+                      <Td className="tabular-nums">{formatSaleDate(p.dueDate)}</Td>
+                      <Td className="text-right tabular-nums">{formatBRL(p.amountCents)}</Td>
+                      <Td>
+                        <InstallmentStatusBadge status={p.status} dueDate={p.dueDate} today={today} />
+                      </Td>
+                      <Td className="text-slate-500">{p.paidAt ? `${formatDateTime(p.paidAt)} · ${p.paidByName ?? "—"}` : "—"}</Td>
+                      <Td>
+                        {p.status === "OPEN" && (
+                          <MarkPaidButton installmentId={p.id} number={p.number} amount={formatBRL(p.amountCents)} dueDate={p.dueDate} />
+                        )}
+                      </Td>
+                    </tr>
+                  ))}
+                </Tbody>
+              </Table>
+            </Card>
+          )}
         </div>
 
         <Card>

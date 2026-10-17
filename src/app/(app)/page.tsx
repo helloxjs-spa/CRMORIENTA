@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Building2, CalendarClock, ShieldCheck, UserCog, Users, UserX } from "lucide-react";
+import { Building2, ShieldCheck, UserCog, Users, UserX } from "lucide-react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, StatCard } from "@/components/ui/card";
@@ -44,7 +44,6 @@ export default async function HomePage({ searchParams }: PageProps<"/">) {
       {ctx.actor.role === "ADMIN" && <AdminOverview ctx={ctx} />}
       {ctx.actor.role === "SUPERVISOR" && <SupervisorOverview ctx={ctx} />}
       {ctx.actor.role === "SELLER" && <SellerOverview ctx={ctx} />}
-      <UpcomingModules />
     </>
   );
 }
@@ -144,22 +143,3 @@ async function SellerOverview({ ctx }: { ctx: ServiceContext }) {
   );
 }
 
-// Só o que ainda não foi entregue (Leads, Kanban, Vendas, Estornos, Ranking e
-// Dashboard já estão no menu).
-const UPCOMING = ["Parcelas: geração e controle de recebimento", "Certificados", "Relatórios e exportação"];
-
-function UpcomingModules() {
-  return (
-    <Card className="mt-6">
-      <CardHeader title="Próximas entregas" description="Módulos planejados para as próximas fases do CRM" />
-      <ul className="space-y-2.5 px-5 py-4">
-        {UPCOMING.map((item) => (
-          <li key={item} className="flex items-start gap-2.5 text-sm text-slate-600">
-            <CalendarClock className="mt-0.5 size-4 shrink-0 text-brand-500" aria-hidden />
-            {item}
-          </li>
-        ))}
-      </ul>
-    </Card>
-  );
-}

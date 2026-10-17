@@ -118,12 +118,58 @@ Página inicial (`/`), com período na URL (o mesmo parser do Ranking: mês atua
 - **Leads (C47):** três números separados — leads cadastrados no período (data de cadastro no fuso do negócio), carteira atual por etapa (leads ativos agora, independe do período) e alertas (follow-ups e negociações com prazo vencido; para SUPERVISOR/ADMIN também a fila de decisão de `countDecisionQueue`). Escopo de leitura = o de `listLeads` (SELLER os próprios ativos; SUPERVISOR os da equipe **atual** do lead; ADMIN todos). Conversão = leads cadastrados no período com pelo menos uma venda válida (em qualquer data; cada lead conta uma vez) ÷ leads cadastrados no período que **não estão hoje na Lixeira** (`conversionBase`, #28) × 100; sem leads elegíveis → "Indisponível". Lixeira (C49): fora da carteira, dos alertas e da fila; nos leads do período ela entra para quem a enxerga (SUPERVISOR/ADMIN), com a quantidade identificada (`trashedInPeriod`). Lead na Lixeira nunca tem venda válida (o banco exige lead ativo em Fechamento e a Lixeira recusa Fechamento), então só afetaria o denominador — e a #28 o tira de lá: o denominador conta só leads fora da Lixeira, para todos os perfis (assim a conversão da equipe coincide com a dos vendedores quando a população é a mesma).
 - **Comparação mês a mês (C48, ADMIN):** os 12 meses até o mês atual (o atual em andamento), com vendas, faturamento, custo e lucro e a variação % sobre o mês anterior; mês anterior zerado (ou lucro anterior ≤ 0) → variação "Indisponível".
 
+### Certificados (§18; migration 005)
+
+| Tabela | Papel | Regras no banco |
+|---|---|---|
+| `certificates` | Um certificado por **item de venda** (`sale_item_id` único; o mesmo curso repetido na venda são itens distintos): `completed_on` (conclusão), `delivered_on` (entrega), `certifier` (certificadora, texto livre), `created_by`/`created_at` | entrega ≥ conclusão; certificadora não vazia (até 200 caracteres); item, autor e momento do registro imutáveis; sem DELETE/TRUNCATE; RLS + `REVOKE` |
+
+Aluno (nome do lead), curso, vendedor e data da venda **não** são copiados: vêm do item, da venda e do lead. Serviço em [`src/server/modules/certificates/certificates.service.ts`](../src/server/modules/certificates/certificates.service.ts), todos com `certificates:operate` (ADMIN, SUPERVISOR, SELLER) e o escopo das vendas (C50: SELLER as vendas de que é responsável; SUPERVISOR as dos vendedores atualmente na equipe que lidera; ADMIN todas; fora dele → 404):
+
+| Função | O que faz |
+|---|---|
+| `registerCertificate` | Registra conclusão, entrega e certificadora de uma vez (C51), só para item **atual** de venda **válida** (C51). Datas não futuras (fuso do negócio) e entrega ≥ conclusão. Trava a venda (`FOR SHARE`) antes de conferir, então estorno e remoção de item concorrentes esperam. Segundo certificado do mesmo item → conflito. Auditoria `certificate.created` em `audit_events` (com a equipe atual do vendedor) na mesma transação |
+| `listCertificates` | Paginada no banco; busca pelo nome do aluno e período pela data de **conclusão** ou de **entrega** (padrão); devolve o total de certificados e de alunos distintos nos filtros. Vendedor = responsável **atual** da venda (C51); mostra também a situação atual da venda e do item |
+| `getSaleItemCertificates` | Certificados dos itens atuais de uma venda no escopo (detalhe da venda) |
+
+Telas: `/certificados` (filtros na URL, contagens, tabela/cards, paginação) e, no detalhe da venda, a coluna **Certificado** em cada curso, com "Registrar certificado" nos itens de venda válida ainda sem certificado. Não há edição nem exclusão. Pendentes, sem comportamento inventado: o que acontece com o certificado se a venda for estornada ou o item removido depois do registro (nada é alterado; a lista só sinaliza "Venda estornada"/"Curso removido da venda"), correção/desfazer de certificado e certificados de vendas anteriores ao CRM.
+
+### Parcelas (§12; migration 006)
+
+| Tabela | Papel | Regras no banco |
+|---|---|---|
+| `installments` | Parcelas do **cartão**: `number`, `amount_cents`, `due_date`, `status` (`OPEN`/`PAID`/`CANCELED`), `paid_at`/`paid_by`, `replaced_at` (cronograma substituído, histórico) | cronograma atual (`replaced_at` NULL) conferido no COMMIT contra a venda: Pix sem parcelas; cartão com exatamente `installment_count` parcelas, números 1..N, vencimento = `sale_date + n meses`, valor = total ÷ N com o resto na 1ª, soma = total; venda válida sem parcela cancelada e estornada sem parcela em aberto. Transições: OPEN → PAID, OPEN ↔ CANCELED, → substituída; paga e substituída imutáveis; venda, número, valor e vencimento imutáveis; `paid_at`/`replaced_at`/`created_at` do banco; sem DELETE/TRUNCATE; RLS + `REVOKE` |
+
+Regra pura em [`src/lib/installments.ts`](../src/lib/installments.ts) (a mesma que o banco confere); serviço em [`src/server/modules/installments/installments.service.ts`](../src/server/modules/installments/installments.service.ts). O cronograma é mantido **dentro das transações de venda** (`sales.service`, com a venda já travada `FOR UPDATE`): criado em `createSale`; em `updateSale`, mudança de total (inclusive inclusão/remoção/correção de itens), forma de pagamento, quantidade de parcelas ou data → cronograma refeito (o anterior fica cancelado com `replaced_at`), ou a alteração inteira é recusada se houver parcela paga; troca de responsável não mexe nas parcelas; `reverseSale` cancela as em aberto (pagas continuam pagas); `reactivateSale` reabre as canceladas do cronograma atual (venda estornada editada sem parcela paga ganha cronograma novo já cancelado, que a reativação reabre).
+
+| Função | Quem pode | O que faz |
+|---|---|---|
+| `markInstallmentPaid` | ADMIN, SUPERVISOR, SELLER (`installments:markPaid`) + escopo C50 | Marca parcela **em aberto** do cronograma atual como paga (data/hora do servidor e autor); trava a venda (`FOR SHARE`) e depois a parcela (`FOR UPDATE`), a mesma ordem das operações de venda; segunda vez → conflito. Auditoria `installment.paid` em `audit_events` (com a equipe atual do vendedor) |
+| `listInstallments` | idem | Só o cronograma atual; paginada no banco; filtros: situação (em aberto, **vencidas** = em aberto com vencimento antes de hoje, pagas, canceladas), período de vencimento e nome do lead; resumo com quantidade e soma dos valores |
+| `getSaleInstallments` | idem | Cronograma atual de uma venda (detalhe da venda) |
+
+Telas: `/parcelas` e o card **Parcelas** no detalhe de vendas no cartão, ambos com "Marcar como paga" (confirmação). Faturamento, comissão, ranking e dashboard continuam pela venda válida e pela data da venda (C45), sem depender de recebimentos. **Ordem de implantação:** com a 006 aplicada, a versão anterior da aplicação não consegue registrar vendas no cartão (o banco exige o cronograma); o código de Parcelas precisa ir junto. Pendentes (não implementados): edição manual de vencimento, baixa parcial, desfazer pagamento, informar uma data de pagamento diferente da do registro e tratamento de atraso além da sinalização "Vencida".
+
+### Relatórios (§20; sem tabela própria)
+
+`buildReport` em [`src/server/modules/reports/reports.service.ts`](../src/server/modules/reports/reports.service.ts), só com `reports:export` (ADMIN, SUPERVISOR; SELLER negado — dúvida #3). **Não refaz escopo nem cálculo**: cada relatório chama o serviço oficial do módulo e percorre todas as páginas dele (mesmo escopo e filtros da tela), com teto técnico de 10.000 linhas por arquivo (acima disso, pede filtros mais estreitos).
+
+| Relatório | Fonte | Período |
+|---|---|---|
+| Leads | `listLeads` (escopo de leitura de leads; filtro novo `createdFrom/createdTo` pelo dia de cadastro no fuso do negócio, a mesma expressão do Dashboard) | Data de cadastro |
+| Vendas | `listSales` (escopo C50, filtros da lista); custo das bolsas e lucro (total − custo, §13) só para `finance:viewCostAndProfit`, por `getSalesCostTotals` (mesma soma de `getSaleWithCost`) | Data da venda |
+| Itens vendidos | `listSaleItemsForReport` (itens atuais; mesmas condições de `listSales`, extraídas em `saleListConditions`); custo e lucro do item só para o ADMIN | Data da venda |
+| Comissões | Itens atuais das vendas **válidas**, somados por vendedor responsável — a regra da comissão do Dashboard (§14, C45) | Data da venda |
+| Desempenho | `getRanking` (vendedores ou equipes, quantidade ou faturamento; C42–C44 e C50, inclusive "Sem equipe" só para o ADMIN) | Data da venda (obrigatório) |
+| Parcelas | `listInstallments` (cronograma atual; "Vencida" como na tela) | Vencimento |
+| Certificados | `listCertificates` | Conclusão ou entrega |
+
+Tela `/relatorios` (um formulário por relatório) e download em `/relatorios/exportar` (Route Handler: revalida a sessão, só repassa os filtros conhecidos e o serviço valida cada relatório com `z.strictObject`; erro de negócio volta para a tela com a mensagem). Formato (decisão técnica, §26 e dúvida #11): **CSV para Excel pt-BR**, sem dependência nova — UTF-8 com BOM, separador `;`, decimal com vírgula, CRLF; textos iniciados por `= + - @` recebem apóstrofo (sem injeção de fórmula). A coluna "Equipe na venda" é o registro histórico (`sales.team_id`); escopo e agrupamento seguem a C50.
+
 ### Planejado (próximas fases)
 
 | Entidade | Responsabilidade | Observações de modelagem |
 |---|---|---|
-| `installments` | Parcelas | `number`, `amount_cents`, `due_date`, `status` (`PENDING`/`PAID`), `paid_at`, `paid_by`; `UNIQUE(sale_id, number)`. Regras de geração (primeira data, recorrência, centavos) só serão definidas na fase financeira |
-| `certificates` | Controle operacional | Vinculado a `sale_item` (aluno, curso, vendedor e data da venda vêm dele); conclusão, entrega, certificadora (texto) |
 | `app_settings` | Parâmetros editáveis (ex.: comissão por curso) | O valor vigente é copiado nos registros gerados |
 
 ### Equipe "da época" × equipe atual
@@ -278,12 +324,12 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 | **4. Negociação** ✅ | Observações renovando o prazo, vencimento e bloqueio do vendedor | §8 |
 | 5. Retrabalho + Lixeira | ✅ entregue junto da fase 2 (serviços e telas) | §9 |
 | 6. Vendas | **3a ✅** registro e consultas. **3b ✅** edição, estorno e reativação (backend). **3c ✅** telas e integração com Leads/Kanban | §11, §13, §14, §15 |
-| 7. Pagamentos e parcelas | Pix/cartão, geração e baixa de parcelas | §12 |
+| 7. Pagamentos e parcelas ✅ | Migration 006, cronograma do cartão mantido com a venda, pagamento, lista com situação e período (C52) | §12 |
 | 8. Estorno ✅ | Estorno/reativação com motivo (Etapa 3b) e aba **Estornos** em Vendas. Saída do faturamento, lucro e comissão do período: verificar quando existirem Dashboards/Comissões | §15 |
 | 9. Ranking ✅ | Quantidade × faturamento, vendedores × equipes, mês/intervalo; visibilidade C42–C44 | §16 |
 | 10. Dashboards ✅ | Vendas, faturamento, comissão, custo/lucro (ADMIN), leads do período, carteira por etapa, conversão, alertas, desempenho por vendedor/equipe, 12 meses (ADMIN) — C45–C48 | §17 |
-| 11. Certificados | Controle operacional | §18 |
-| 12. Relatórios | CSV/Excel respeitando escopo | §20 |
+| 11. Certificados ✅ | Controle operacional: migration 005, registro por item, lista com período e contagem (C51) | §18 |
+| 12. Relatórios ✅ | Exportação CSV (Excel) de leads, vendas, itens, comissões, desempenho, parcelas e certificados, pelos serviços de cada módulo | §20 |
 | 13. Endurecimento | E2E, testes de cálculo, revisão de segurança | §24 |
 
 ## 8. Decisões
@@ -297,7 +343,7 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 | C3 | **Retrabalho é etapa visível do Kanban**, e o histórico distingue os ciclos de follow-up | `stage = REWORK` + `lead_cycles`, §4 |
 | C4 | **Vendedor que muda de equipe leva os leads em aberto**; vendas e eventos passados ficam com a equipe da época. *Atualizada pela C50:* a equipe da época continua gravada como histórico (`sales.team_id`), mas não define mais escopo nem agrupamento gerencial | §3 "Equipe da época × equipe atual"; auditoria da troca com retrato de origem e destino (implementado) |
 | C5 | **Supervisor não tem carteira comercial.** Só o SELLER tem leads, vendas, follow-ups, negociações e comissões: o **responsável** de lead e de venda é sempre um SELLER. *Atualizada pela C36:* SUPERVISOR e ADMIN também **registram** vendas, escolhendo o vendedor responsável. *Atualizada pela C41:* também **cadastram** leads, escolhendo o vendedor responsável | triggers garantem que `leads.owner_id` e `sales.seller_id` sejam sempre SELLER ✅ |
-| C6 | **Parcelas**: só a estrutura (número, valor, vencimento, status, data de pagamento). Regras de geração ficam para a fase financeira | §3 |
+| C6 | **Parcelas**: só a estrutura (número, valor, vencimento, status, data de pagamento). Regras de geração ficam para a fase financeira. *Complementada pela C52* | §3 "Parcelas" |
 | C7 | **ADMIN opera leads globalmente**: transfere, redistribui, manda para a Lixeira, recupera e escolhe o novo vendedor. *(A restrição de estorno da C1 foi substituída pela C36: o ADMIN também estorna e reativa vendas.)* | `leads:transfer/redistribute/trash/restore` incluem ADMIN |
 | C8 | **Telefone**: só números brasileiros, DDD obrigatório, celular com 9º dígito. Qualquer formato de entrada vira um telefone canônico único (`(79) 99999-9999` = `+55 79 99999-9999`), com unicidade garantida no PostgreSQL ✅ `src/lib/phone.ts` + `leads_phone_unique` + `CHECK leads_phone_canonical` |
 | C9 | **Duplicado ativo**: bloquear e informar só que já existe, o nome do responsável e a equipe. Nada de histórico, observações ou outros dados. Vale também ao editar o telefone | ✅ `LeadAlreadyExistsError` |
@@ -342,6 +388,8 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 | C48 | **Comparação mensal (ADMIN)**: últimos 12 meses com vendas válidas, faturamento, custo e lucro e variação % sobre o mês anterior; sem base comparável → "Indisponível" | `getMonthlyComparison` |
 | C38 | **Equipe inativa**: vendedor dela não é reativado, não recebe leads novos (cadastro, transferência, redistribuição, recuperação) nem vendas novas; nada histórico é alterado. Regularização: o ADMIN reativa a equipe ou transfere o vendedor para uma equipe ativa | `setUserActive`, `createLead`, `loadTargetSeller`, `createSale` |
 | C50 | **Escopo de acesso e agrupamento gerencial pela equipe atual** (aprovada em 2026-10-17). ADMIN: acesso global, respeitando as restrições de cada módulo. SUPERVISOR: dados dos vendedores **atualmente** vinculados à equipe que lidera, inclusive vendas anteriores à transferência. SELLER: os próprios dados, como já definido. Vale para escopo e agrupamento por equipe de Vendas, Dashboard, Ranking e dos futuros Parcelas, Certificados e Relatórios, respeitando as permissões de cada módulo. **Substitui** o critério de escopo/agrupamento por `sales.team_id` do Ranking (C42) e do Dashboard (C46) e a parte de escopo da C4. **Não substitui** o valor histórico: `sales.team_id` continua gravado e nunca reescrito; vendas antigas e o histórico de transferências não são alterados. Continuam valendo: faturamento e indicadores pela data da venda (C45), estornadas fora das vendas válidas, comissão pela venda válida, custo e lucro só para ADMIN; nenhuma comissão, valor, data ou registro histórico é alterado. **Complemento aprovado (resolve a #29): vendedor sem equipe atual.** No Dashboard e no Ranking do ADMIN, as vendas válidas dele aparecem agrupadas em **"Sem equipe"** nos indicadores e rankings por equipe e continuam nos totais globais (nunca somem por falta de equipe). O SUPERVISOR continua vendo só os vendedores atualmente na equipe que lidera (com as vendas históricas deles); vendedor sem equipe não entra no escopo de nenhum supervisor. O SELLER continua restrito aos próprios dados | `listSales`/`getSale` (escopo e filtro de equipe do ADMIN pela equipe atual), `getRanking`, `getSalesIndicators` |
+| C52 | **Parcelas** (aprovada em 2026-10-17): só **cartão** tem parcelas (Pix é à vista). A parcela n vence **n meses após a data da venda**, no mesmo dia (dia inexistente → último dia do mês); valor = total ÷ quantidade, com os **centavos que sobram na 1ª**. Mudança de total, forma de pagamento, quantidade de parcelas ou data da venda: **sem parcela paga, o cronograma é refeito**; **com parcela paga, a mudança é recusada**. **Estorno cancela as parcelas em aberto** (pagas continuam pagas); **reativação as reabre**. Pagamento registrado uma vez, com data/hora do servidor | migration 006; `createSale`, `updateSale`, `reverseSale`, `reactivateSale`, `markInstallmentPaid` |
+| C51 | **Certificados** (aprovada em 2026-10-17): só itens atuais (não removidos) de **vendas válidas** recebem certificado; o registro é feito **de uma vez**, com conclusão, entrega e certificadora obrigatórias, datas não futuras e entrega ≥ conclusão; o vendedor exibido é o **responsável atual da venda**, lido na hora (sem cópia no certificado; o da época pode ser reconstruído pelo histórico da venda, se decidido depois) | `registerCertificate`, `listCertificates`, migration 005 |
 
 ### Decisões técnicas
 
@@ -355,7 +403,7 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 
 ## 9. Dúvidas em aberto
 
-Resolvidas pelo cliente: C1–C50 (§8). As linhas abaixo mantêm a numeração original; as resolvidas foram removidas. Pendentes:
+Resolvidas pelo cliente: C1–C52 (§8). As linhas abaixo mantêm a numeração original; as resolvidas foram removidas. Pendentes:
 
 | # | Dúvida | Contexto | Padrão atual | Fase |
 |---|---|---|---|---|
@@ -364,7 +412,7 @@ Resolvidas pelo cliente: C1–C50 (§8). As linhas abaixo mantêm a numeração 
 | 5 | ~~Supervisor vê lucro/custo agregado do time?~~ — **resolvida (C46):** não; custo, lucro e margem só para o ADMIN | — | — | — |
 | 6 | **"Por curso/aluno"**: uma venda pode ter cursos de **alunos diferentes**? | §14 e RA-03 | Item = curso; aluno = lead da venda | Vendas |
 | 7 | ~~Custo de bolsa alterado~~ — **resolvida:** vendas antigas mantêm o custo e a comissão da época (snapshot em `sale_items`) | — | — | — |
-| 11 | Formato e colunas de cada relatório | §26 | — | Relatórios |
+| 11 | Formato e colunas de cada relatório — **implementado como decisão técnica** (§26): CSV para Excel pt-BR e as colunas de §3 "Relatórios"; validar com o cliente (ex.: necessidade de `.xlsx` nativo ou de outras colunas) | §26 | CSV `;` com BOM | Relatórios |
 | 26 | **SUPERVISOR ou ADMIN movimentam etapas** de um lead da equipe? | C5: só o vendedor tem carteira e follow-ups | Não (`leads:move` = SELLER) | Kanban |
 | 27 | **Negociação vencida** deveria bloquear também **parcelas e certificados** quando existirem? | C34 cita só cadastro e movimentação de leads | Não bloqueia | Vendas |
 | 29 | ~~Vendedor sem equipe atual no agrupamento por equipe~~ — **resolvida (complemento da C50):** para o ADMIN, no Dashboard e no Ranking, as vendas válidas dele ficam no grupo "Sem equipe" e continuam nos totais globais; fora do escopo de qualquer SUPERVISOR; SELLER sem mudança | — | — | — |

@@ -25,6 +25,8 @@ export const AUDIT_ACTIONS = {
   "course.cost_changed": "Custo da bolsa alterado",
   "course.activated": "Curso reativado",
   "course.deactivated": "Curso desativado",
+  "certificate.created": "Certificado registrado",
+  "installment.paid": "Parcela marcada como paga",
 } as const;
 
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
@@ -32,7 +34,7 @@ export type AuditAction = keyof typeof AUDIT_ACTIONS;
 export type AuditInput = {
   actorId: string | null;
   action: AuditAction;
-  entityType: "user" | "team" | "session" | "course";
+  entityType: "user" | "team" | "session" | "course" | "certificate" | "installment";
   entityId?: string | null;
   teamId?: string | null;
   metadata?: Record<string, unknown>;

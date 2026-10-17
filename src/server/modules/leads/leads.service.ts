@@ -229,6 +229,9 @@ const listFiltersSchema = z.strictObject({
   search: z.string().trim().max(120).optional(),
   /** "deadline": prazo mais próximo primeiro (Kanban); padrão: mais recentes. */
   order: z.enum(["recent", "deadline"]).optional(),
+  /** Data de cadastro (dia no fuso do negócio, como no Dashboard), inclusive. */
+  createdFrom: z.iso.date({ error: "Data inválida." }).optional(),
+  createdTo: z.iso.date({ error: "Data inválida." }).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -472,6 +475,9 @@ export async function listLeads({ db, actor }: ServiceContext, rawFilters: unkno
   if (filters.courseId) conditions.push(eq(leads.interestCourseId, filters.courseId));
   if (filters.ownerId) conditions.push(eq(leads.ownerId, filters.ownerId));
   if (filters.teamId) conditions.push(eq(leads.teamId, filters.teamId));
+  const createdDay = sql`(${leads.createdAt} at time zone ${BUSINESS_RULES.timezone})::date`;
+  if (filters.createdFrom) conditions.push(sql`${createdDay} >= ${filters.createdFrom}::date`);
+  if (filters.createdTo) conditions.push(sql`${createdDay} <= ${filters.createdTo}::date`);
   if (filters.queue) {
     conditions.push(
       filters.queue === "ALL" ? or(queueConditions.UNASSIGNED, queueConditions.FOLLOW_UP_3_EXPIRED) : queueConditions[filters.queue],
