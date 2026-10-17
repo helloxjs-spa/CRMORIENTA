@@ -16,7 +16,7 @@
 | Banco de testes | **PGlite** (Postgres compilado para WASM) | Cada arquivo de teste sobe um Postgres em memória e aplica **os mesmos SQLs** executados no Supabase. Um teste confere que o schema Drizzle bate com o banco. |
 | Autenticação | **Própria, com sessão no banco** | Token aleatório em cookie `httpOnly`; banco guarda só o SHA-256. Senha com `scrypt` nativo do Node. Sem dependência de bibliotecas beta; fácil de auditar. Revogação imediata (desativar usuário derruba as sessões). |
 | Validação | **Zod 4** (`z.strictObject`) | Rejeita campos não previstos → proteção contra mass assignment. |
-| UI | **Tailwind CSS 4** + componentes próprios + **lucide-react** | Visual consistente com a cor #082B59, sem kit pesado. Gráficos (fase de dashboards): Recharts. |
+| UI | **Tailwind CSS 4** + componentes próprios + **lucide-react** | Identidade visual do Colégio Técnico Orienta (azul-marinho #021C37 e creme #FADEB1; marca em `src/assets/brand`, componentes em `src/components/brand`), sem kit pesado. Gráficos (fase de dashboards): Recharts. |
 | Testes | **Vitest** + PGlite | Testes de autorização contra o banco real, rápidos e isolados. |
 
 Descartado propositalmente: microserviços, filas, Redis, GraphQL, ORM com engine própria, Cache Components do Next (todas as telas são por usuário e precisam de dados atuais).

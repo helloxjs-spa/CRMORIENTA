@@ -6,7 +6,6 @@ import {
   Contact,
   CreditCard,
   FileSpreadsheet,
-  GraduationCap,
   LayoutDashboard,
   Menu,
   ScrollText,
@@ -21,6 +20,7 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
+import { OrientaMark, OrientaWordmark } from "@/components/brand/orienta";
 import { cn } from "@/lib/cn";
 import type { NavIcon, NavSection } from "./navigation";
 
@@ -92,14 +92,9 @@ export function AppShell({ navigation, header, children }: { navigation: NavSect
 function Sidebar({ navigation, pathname }: { navigation: NavSection[]; pathname: string }) {
   return (
     <nav className="flex h-full flex-col overflow-y-auto bg-brand-800 px-3 py-4 text-brand-100" aria-label="Navegação principal">
-      <Link href="/" className="mb-6 flex items-center gap-2.5 px-3 py-1">
-        <span className="flex size-9 items-center justify-center rounded-lg bg-white/10 ring-1 ring-white/15">
-          <GraduationCap className="size-5 text-white" aria-hidden />
-        </span>
-        <span className="leading-tight">
-          <span className="block text-sm font-semibold text-white">CRM Polo</span>
-          <span className="block text-xs text-brand-200">Educacional</span>
-        </span>
+      <Link href="/" className="mb-6 flex items-center gap-3 border-b border-white/10 px-3 pb-5 pt-1" aria-label="Colégio Técnico Orienta — Início">
+        <OrientaMark className="size-11 shrink-0" />
+        <OrientaWordmark className="text-[1.4rem]" />
       </Link>
 
       <div className="flex-1 space-y-6">
@@ -133,7 +128,9 @@ function Sidebar({ navigation, pathname }: { navigation: NavSection[]; pathname:
                       aria-current={active ? "page" : undefined}
                       className={cn(
                         "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                        active ? "bg-white/12 text-white shadow-inner ring-1 ring-white/10" : "hover:bg-white/5 hover:text-white",
+                        active
+                          ? "bg-white/10 text-white shadow-inner ring-1 ring-gold-200/25 [&>svg]:text-gold-200"
+                          : "hover:bg-white/5 hover:text-white",
                       )}
                     >
                       <Icon className="size-4.5 shrink-0" aria-hidden />

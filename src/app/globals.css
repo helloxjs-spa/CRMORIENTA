@@ -1,20 +1,35 @@
 @import "tailwindcss";
 
 @theme {
-  /* Identidade visual — cor principal #082B59 (brand-800) */
-  --color-brand-50: #eef3fa;
-  --color-brand-100: #d7e2f1;
-  --color-brand-200: #afc4e3;
-  --color-brand-300: #7e9fcf;
-  --color-brand-400: #4f78b6;
-  --color-brand-500: #2d5a9b;
-  --color-brand-600: #17447f;
-  --color-brand-700: #0e3568;
-  --color-brand-800: #082b59;
-  --color-brand-900: #062146;
-  --color-brand-950: #041631;
+  /* Identidade visual do Colégio Técnico Orienta (logo em src/assets/brand).
+     Azul-marinho do fundo do logo = brand-800 (#021C37). */
+  --color-brand-50: #eef3f9;
+  --color-brand-100: #d8e4f1;
+  --color-brand-200: #afc5df;
+  --color-brand-300: #7fa2c9;
+  --color-brand-400: #4f7cad;
+  --color-brand-500: #2a5a8c;
+  --color-brand-600: #153f6c;
+  --color-brand-700: #0a2d52;
+  --color-brand-800: #021c37;
+  --color-brand-900: #011429;
+  --color-brand-950: #000d1c;
+
+  /* Creme/dourado das letras e da rosa dos ventos = gold-200 (#FADEB1). */
+  --color-gold-50: #fdf8ef;
+  --color-gold-100: #fbefd9;
+  --color-gold-200: #fadeb1;
+  --color-gold-300: #f2c785;
+  --color-gold-400: #e5ab5c;
+  --color-gold-500: #cf8f3e;
+  --color-gold-600: #ad722f;
+  --color-gold-700: #8a5828;
+  --color-gold-800: #714824;
+  --color-gold-900: #5e3c21;
 
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  /* Serifada em caixa-alta próxima à do logotipo; só para a marca. */
+  --font-display: var(--font-cinzel), ui-serif, Georgia, serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 }
 
@@ -27,7 +42,7 @@ body {
 }
 
 dialog::backdrop {
-  background: rgb(4 22 49 / 0.45);
+  background: rgb(0 13 28 / 0.5);
   backdrop-filter: blur(2px);
 }
 
