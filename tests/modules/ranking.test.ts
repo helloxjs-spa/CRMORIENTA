@@ -157,20 +157,44 @@ describe("validação", () => {
   });
 });
 
-describe("atribuição histórica da equipe (C4)", () => {
-  it("vendedor que muda de equipe: vendas antigas ficam na equipe da época", async () => {
+describe("equipe atual do vendedor (C50)", () => {
+  it("vendedor que muda de equipe: as vendas antigas acompanham a equipe atual; sales.team_id fica como histórico", async () => {
     const seller = await insertUser(handle, { name: "Vendedor Migrante", role: "SELLER", teamId: org.ids.teamA });
-    await sale(seller, "2026-08-05", 70_000);
+    const before = await sale(seller, "2026-08-05", 70_000);
     await changeSellerTeam(await org.ctx(org.ids.admin), seller, { teamId: org.ids.teamB });
     await sale(seller, "2026-08-20", 30_000);
 
-    expect(rows(await rank(org.ids.admin, { view: "teams", criterion: "revenue", ...AUG }))).toEqual([
-      ["Equipe A", 1, 1, 70_000],
-      ["Equipe B", 2, 1, 30_000],
-    ]);
-    // Ranking de vendedores: o vendedor soma tudo; cada supervisor vê só as vendas da própria equipe.
+    expect(rows(await rank(org.ids.admin, { view: "teams", criterion: "revenue", ...AUG }))).toEqual([["Equipe B", 1, 2, 100_000]]);
     expect(rows(await rank(org.ids.admin, { view: "sellers", criterion: "count", ...AUG }))).toEqual([["Vendedor Migrante", 1, 2, 100_000]]);
-    expect(rows(await rank(org.ids.supA, { view: "sellers", criterion: "count", ...AUG }))).toEqual([["Vendedor Migrante", 1, 1, 70_000]]);
-    expect(rows(await rank(org.ids.supB, { view: "sellers", criterion: "count", ...AUG }))).toEqual([["Vendedor Migrante", 1, 1, 30_000]]);
+    // O supervisor da equipe atual vê tudo do vendedor; o da equipe anterior, nada.
+    expect(rows(await rank(org.ids.supA, { view: "sellers", criterion: "count", ...AUG }))).toEqual([]);
+    expect(rows(await rank(org.ids.supB, { view: "sellers", criterion: "count", ...AUG }))).toEqual([["Vendedor Migrante", 1, 2, 100_000]]);
+    // Registro histórico preservado.
+    expect((await getSale(await org.ctx(org.ids.admin), before)).teamId).toBe(org.ids.teamA);
+  });
+
+  it('vendedor sem equipe atual: grupo "Sem equipe" só para o ADMIN; fora do escopo de todo supervisor', async () => {
+    const JUN = { dateFrom: "2026-06-01", dateTo: "2026-06-30" };
+    const loose = await insertUser(handle, { name: "Vendedor Sem Equipe", role: "SELLER", teamId: org.ids.teamA });
+    await sale(loose, "2026-06-10", 80_000);
+    await sale(org.ids.sellerA1, "2026-06-11", 20_000);
+    await changeSellerTeam(await org.ctx(org.ids.admin), loose, { teamId: null });
+
+    const teams = await rank(org.ids.admin, { view: "teams", criterion: "revenue", ...JUN });
+    expect(rows(teams)).toEqual([
+      ["Sem equipe", 1, 1, 80_000],
+      ["Equipe A", 2, 1, 20_000],
+    ]);
+    expect(teams.mode === "teams" && teams.entries[0]).toMatchObject({ id: null, active: true, supervisorName: null });
+    expect(rows(await rank(org.ids.admin, { view: "sellers", criterion: "revenue", ...JUN }))).toEqual([
+      ["Vendedor Sem Equipe", 1, 1, 80_000],
+      ["Vendedor A1", 2, 1, 20_000],
+    ]);
+
+    expect(rows(await rank(org.ids.supA, { view: "teams", criterion: "revenue", ...JUN }))).toEqual([["Equipe A", 1, 1, 20_000]]);
+    expect(rows(await rank(org.ids.supA, { view: "sellers", criterion: "revenue", ...JUN }))).toEqual([["Vendedor A1", 1, 1, 20_000]]);
+    expect(rows(await rank(org.ids.supB, { view: "sellers", criterion: "revenue", ...JUN }))).toEqual([]);
+    // O próprio vendedor continua no ranking geral de vendedores.
+    expect(await rank(loose, { view: "sellers", criterion: "revenue", ...JUN })).toMatchObject({ mode: "self", position: 1, total: 2 });
   });
 });

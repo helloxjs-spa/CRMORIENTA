@@ -62,7 +62,7 @@ export async function SalesResults({ ctx, params, viewer }: { ctx: ServiceContex
               <Th>Lead</Th>
               <Th>Cursos</Th>
               {viewer.showSeller && <Th>Responsável</Th>}
-              {viewer.showSeller && <Th>Equipe</Th>}
+              {viewer.showSeller && <Th>Equipe na venda</Th>}
               <Th>Pagamento</Th>
               <Th className="text-right">Total</Th>
               {reversals ? (

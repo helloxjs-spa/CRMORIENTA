@@ -789,7 +789,8 @@ export async function listSales({ db, actor }: ServiceContext, rawFilters: unkno
   const conditions: (SQL | undefined)[] = [saleScope(actor)];
   if (filters.status) conditions.push(eq(sales.status, filters.status));
   if (filters.sellerId) conditions.push(eq(sales.sellerId, filters.sellerId));
-  if (filters.teamId) conditions.push(eq(sales.teamId, filters.teamId));
+  // Equipe ATUAL do vendedor responsável (C50); `sales.team_id` é só histórico.
+  if (filters.teamId) conditions.push(eq(responsible.teamId, filters.teamId));
   if (filters.leadId) conditions.push(eq(sales.leadId, filters.leadId));
   if (filters.paymentMethod) conditions.push(eq(sales.paymentMethod, filters.paymentMethod));
   if (filters.dateFrom) conditions.push(gte(sales.saleDate, filters.dateFrom));

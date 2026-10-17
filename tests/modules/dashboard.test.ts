@@ -6,7 +6,7 @@ import { getMonthlyComparison, getSalesIndicators } from "@/server/modules/dashb
 import { createLead, getLeadIndicators } from "@/server/modules/leads/leads.service";
 import { createSale, getSale, reverseSale, updateSale } from "@/server/modules/sales/sales.service";
 import { changeSellerTeam } from "@/server/modules/users/users.service";
-import { createTestDatabase, seedOrganization } from "../support/db";
+import { createTestDatabase, insertUser, seedOrganization } from "../support/db";
 import { setLeadStage } from "../support/leads";
 import { insertCourseWithCost } from "../support/sales";
 
@@ -15,7 +15,8 @@ import { insertCourseWithCost } from "../support/sales";
  *   A1: L1 (2 vendas válidas em jul), L2 (venda estornada), L3, L7 — sem venda
  *   A2: L4 (venda de jul com 2 itens; 1 removido) e, já na equipe B, L6 (venda em jul)
  *   B1: L5 (venda em ago)
- * A2 muda da equipe A para a B depois da venda de L4 (vendas antigas ficam na A).
+ * A2 muda da equipe A para a B depois da venda de L4: pela C50 o supervisor B
+ * passa a ver também a venda antiga de L4 (sales.team_id continua A, só histórico).
  */
 let handle: DatabaseHandle;
 let org: Awaited<ReturnType<typeof seedOrganization>>;
@@ -93,10 +94,11 @@ describe("vendas: válidas, pela data da venda, com itens removidos fora", () =>
     });
   });
 
-  it("SUPERVISOR: equipe registrada na venda (a venda antiga de A2 fica na A); sem custo nem lucro", async () => {
+  it("SUPERVISOR: vendedores atuais da equipe, com as vendas anteriores à transferência (C50); sem custo nem lucro", async () => {
+    // A2 foi para a B: a venda de L4 (registrada na A) passa para o escopo da B.
     const supA = await getSalesIndicators(await ctx(org.ids.supA), JUL);
-    expect(supA).toEqual({ salesCount: 3, revenueCents: 450_000, commissionCents: 30_000 });
-    expect(await getSalesIndicators(await ctx(org.ids.supB), JUL)).toEqual({ salesCount: 1, revenueCents: 80_000, commissionCents: 10_000 });
+    expect(supA).toEqual({ salesCount: 2, revenueCents: 300_000, commissionCents: 20_000 });
+    expect(await getSalesIndicators(await ctx(org.ids.supB), JUL)).toEqual({ salesCount: 2, revenueCents: 230_000, commissionCents: 20_000 });
     expect(JSON.stringify(supA)).not.toMatch(/cost|profit|finance|margin/i);
   });
 
@@ -178,5 +180,26 @@ describe("comparação mês a mês (ADMIN)", () => {
 
   it("mês inválido é recusado", async () => {
     await expect(getMonthlyComparison(await ctx(org.ids.admin), { endMonth: "2026-13" })).rejects.toBeInstanceOf(ValidationError);
+  });
+});
+
+// Por último: cria vendas e leads novos que os cenários acima não consideram.
+describe("vendedor sem equipe atual (C50)", () => {
+  it("ADMIN mantém as vendas nos totais globais; nenhum supervisor as vê; o vendedor vê as próprias", async () => {
+    const MAR = { dateFrom: "2026-03-01", dateTo: "2026-03-31" };
+    const loose = await insertUser(handle, { name: "Vendedor Sem Equipe Painel", role: "SELLER", teamId: org.ids.teamB });
+    await sale(await lead(loose), loose, "2026-03-10", [60_000]);
+    await changeSellerTeam(await ctx(org.ids.admin), loose, { teamId: null });
+
+    expect(await getSalesIndicators(await ctx(org.ids.admin), MAR)).toEqual({
+      salesCount: 1,
+      revenueCents: 60_000,
+      commissionCents: 10_000,
+      finance: { costCents: 40_000, profitCents: 20_000 },
+    });
+    for (const supervisor of [org.ids.supA, org.ids.supB]) {
+      expect(await getSalesIndicators(await ctx(supervisor), MAR)).toEqual({ salesCount: 0, revenueCents: 0, commissionCents: 0 });
+    }
+    expect(await getSalesIndicators(await ctx(loose), MAR)).toEqual({ salesCount: 1, revenueCents: 60_000, commissionCents: 10_000 });
   });
 });

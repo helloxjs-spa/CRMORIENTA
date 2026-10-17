@@ -178,7 +178,7 @@ function RankingResults({ result, teamName }: { result: RankingResult; teamName:
         </thead>
         <Tbody>
           {(result.entries as (SellerRankingEntry | TeamRankingEntry)[]).map((entry) => (
-            <tr key={entry.id}>
+            <tr key={entry.id ?? "sem-equipe"}>
               <Td className="font-semibold tabular-nums text-slate-900">
                 {entry.position}º{entry.tied && <span className="ml-1 text-xs font-normal text-slate-500">(empate)</span>}
               </Td>

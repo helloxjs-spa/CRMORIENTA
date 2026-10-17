@@ -114,7 +114,7 @@ export default async function SalesPage({ searchParams }: PageProps<"/vendas">) 
             </FilterField>
           )}
           {isAdmin && (
-            <FilterField label="Equipe da venda" htmlFor="sales-team">
+            <FilterField label="Equipe atual do vendedor" htmlFor="sales-team">
               <Select id="sales-team" name="equipe" defaultValue={params.team ?? ""}>
                 <option value="">Todas</option>
                 {teams.map((t) => (

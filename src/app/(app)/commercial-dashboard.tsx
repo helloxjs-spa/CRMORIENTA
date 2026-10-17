@@ -245,7 +245,7 @@ function PerformanceTable({ entries, nameLabel }: { entries: (SellerRankingEntry
       </thead>
       <Tbody>
         {entries.map((entry) => (
-          <tr key={entry.id}>
+          <tr key={entry.id ?? "sem-equipe"}>
             <Td className="tabular-nums">{entry.position}º</Td>
             <Td className="font-medium text-slate-900">{entry.name}</Td>
             <Td className="text-right tabular-nums">{entry.salesCount}</Td>
@@ -263,7 +263,7 @@ function SellerPerformance({ result }: { result: RankingResult }) {
     <Card>
       <CardHeader
         title="Desempenho por vendedor"
-        description={result.scope === "team" ? "Vendas válidas da sua equipe no período (equipe registrada na venda)" : "Vendas válidas no período"}
+        description={result.scope === "team" ? "Vendas válidas no período dos vendedores atuais da sua equipe" : "Vendas válidas no período"}
         actions={
           <Link href="/ranking" className="text-sm font-medium text-brand-700 hover:underline">
             Ver ranking
@@ -283,7 +283,7 @@ function TeamPerformance({ result }: { result: RankingResult }) {
   if (result.mode !== "teams") return null;
   return (
     <Card>
-      <CardHeader title="Desempenho por equipe" description="Pela equipe registrada na venda" />
+      <CardHeader title="Desempenho por equipe" description="Pela equipe atual do vendedor" />
       {result.entries.length === 0 ? (
         <EmptyState icon={Trophy} title="Nenhuma venda válida no período" description="Escolha outro período." />
       ) : (

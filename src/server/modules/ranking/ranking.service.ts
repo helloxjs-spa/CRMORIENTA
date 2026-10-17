@@ -1,4 +1,4 @@
-import { and, eq, gte, lte, sql } from "drizzle-orm";
+import { and, eq, gte, isNotNull, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { z } from "zod";
 import { RANKING_CRITERIA, RANKING_VIEWS, rankEntries, type Ranked, type RankingCriterion } from "@/lib/ranking";
@@ -15,14 +15,17 @@ import { parseInput } from "@/server/validation";
  * (`status = ACTIVE`) com `sale_date` no período. Estornadas não contam.
  *
  * - Vendedores: agrupados pelo responsável da venda (`sales.seller_id`).
- * - Equipes: pela equipe da venda na época (`sales.team_id`, C4) — mudar o
- *   vendedor de equipe não reatribui vendas antigas.
+ * - Equipes: pela equipe ATUAL do vendedor responsável (`users.team_id`, C50),
+ *   inclusive as vendas anteriores a uma transferência; `sales.team_id` fica
+ *   só como registro histórico. Vendas de vendedor sem equipe atual formam o
+ *   grupo "Sem equipe" (`id = null`), só na visão do ADMIN.
  * - Participam só vendedores/equipes com venda válida no período (C43);
  *   empate = mesma posição (C44).
  *
  * Visibilidade (C42), aplicada aqui no servidor:
  * - ADMIN: vendedores da empresa e equipes, completos.
- * - SUPERVISOR: vendedores das vendas da equipe que lidera e ranking das equipes.
+ * - SUPERVISOR: vendedores atualmente na equipe que lidera (com as vendas
+ *   históricas deles) e ranking das equipes (sem o grupo "Sem equipe").
  * - SELLER: somente a própria posição no ranking geral de vendedores ("3º de 25");
  *   nenhum nome, quantidade ou valor de colega sai do serviço.
  */
@@ -41,8 +44,12 @@ const rankingInputSchema = z
 type RankingInput = z.output<typeof rankingInputSchema>;
 
 export type SellerRankingEntry = Ranked<{ id: string; name: string; active: boolean; salesCount: number; revenueCents: number }>;
+/** Nome do grupo das vendas de vendedores sem equipe atual (C50). */
+export const NO_TEAM_LABEL = "Sem equipe";
+
 export type TeamRankingEntry = Ranked<{
-  id: string;
+  /** null = grupo "Sem equipe" (vendedores sem equipe atual; só ADMIN). */
+  id: string | null;
   name: string;
   active: boolean;
   supervisorName: string | null;
@@ -84,14 +91,17 @@ async function sellerTotals(db: Database, data: RankingInput, teamScope: ReturnT
     .groupBy(sales.sellerId, users.name, users.active);
 }
 
-async function teamTotals(db: Database, data: RankingInput) {
-  return db
-    .select({ id: sales.teamId, name: teams.name, active: teams.active, supervisorName: supervisor.name, ...totals })
+/** Agrupa pela equipe ATUAL do vendedor responsável (C50); `includeNoTeam` só para o ADMIN. */
+async function teamTotals(db: Database, data: RankingInput, includeNoTeam: boolean) {
+  const rows = await db
+    .select({ id: teams.id, name: teams.name, active: teams.active, supervisorName: supervisor.name, ...totals })
     .from(sales)
-    .innerJoin(teams, eq(teams.id, sales.teamId))
+    .innerJoin(users, eq(users.id, sales.sellerId))
+    .leftJoin(teams, eq(teams.id, users.teamId))
     .leftJoin(supervisor, eq(supervisor.id, teams.supervisorId))
-    .where(validInPeriod(data))
-    .groupBy(sales.teamId, teams.name, teams.active, supervisor.name);
+    .where(and(validInPeriod(data), includeNoTeam ? undefined : isNotNull(users.teamId)))
+    .groupBy(teams.id, teams.name, teams.active, supervisor.name);
+  return rows.map((row) => (row.id === null ? { ...row, name: NO_TEAM_LABEL, active: true, supervisorName: null } : { ...row, name: row.name!, active: row.active! }));
 }
 
 export async function getRanking({ db, actor }: ServiceContext, input: unknown): Promise<RankingResult> {
@@ -116,12 +126,13 @@ export async function getRanking({ db, actor }: ServiceContext, input: unknown):
   }
 
   if (data.view === "teams") {
-    return { mode: "teams", criterion, entries: rankEntries(await teamTotals(db, data), criterion) };
+    return { mode: "teams", criterion, entries: rankEntries(await teamTotals(db, data, actor.role === "ADMIN"), criterion) };
   }
 
-  // ADMIN: sem restrição; SUPERVISOR: vendas da equipe que lidera (equipe da
-  // época); supervisor sem equipe não vê vendedores.
-  const scope = managedTeamScope(actor, sales.teamId);
+  // ADMIN: sem restrição; SUPERVISOR: vendedores atualmente na equipe que
+  // lidera, com as vendas históricas deles (C50); supervisor sem equipe não vê
+  // vendedores, e vendedor sem equipe não entra no escopo de nenhum supervisor.
+  const scope = managedTeamScope(actor, users.teamId);
   return {
     mode: "sellers",
     criterion,

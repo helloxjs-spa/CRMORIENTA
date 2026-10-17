@@ -6,7 +6,7 @@ import type { Actor } from "@/server/authz/actor";
 import { assertPermission, hasPermission } from "@/server/authz/permissions";
 import { managedTeamScope } from "@/server/authz/scope";
 import type { ServiceContext } from "@/server/context";
-import { saleItems, sales } from "@/server/db/schema";
+import { saleItems, sales, users } from "@/server/db/schema";
 import { parseInput } from "@/server/validation";
 
 /**
@@ -20,9 +20,10 @@ import { parseInput } from "@/server/validation";
  * - Custo = soma de `cost_snapshot_cents` dos itens atuais; Lucro = faturamento
  *   − custo (§13; comissão não entra). Somente `finance:viewCostAndProfit`
  *   (ADMIN): para os demais, custo e lucro nem são consultados.
- * - Escopo: SELLER as vendas de que é responsável; SUPERVISOR as vendas da
- *   equipe registrada na venda (`sales.team_id`, regra histórica do Ranking);
- *   ADMIN todas.
+ * - Escopo (C50): SELLER as vendas de que é responsável; SUPERVISOR as vendas
+ *   dos vendedores ATUALMENTE na equipe que lidera (`users.team_id`), inclusive
+ *   as anteriores a uma transferência — `sales.team_id` fica só como registro
+ *   histórico; ADMIN todas (inclusive de vendedores sem equipe atual).
  */
 
 const periodSchema = z
@@ -53,9 +54,10 @@ export type MonthlyComparisonRow = {
 
 const COMPARISON_MONTHS = 12;
 
+/** Exige `users` (responsável) no FROM, ligado por `sales.seller_id`. */
 function salesScope(actor: Actor): SQL | undefined {
   if (actor.role === "SELLER") return eq(sales.sellerId, actor.userId);
-  return managedTeamScope(actor, sales.teamId);
+  return managedTeamScope(actor, users.teamId);
 }
 
 const sumBigint = (column: SQL | typeof sales.totalCents) => sql<number>`coalesce(sum(${column}), 0)::bigint`.mapWith(Number);
@@ -69,6 +71,7 @@ export async function getSalesIndicators({ db, actor }: ServiceContext, input: u
   const [totals] = await db
     .select({ salesCount: sql<number>`count(*)::int`, revenueCents: sumBigint(sales.totalCents) })
     .from(sales)
+    .innerJoin(users, eq(users.id, sales.sellerId))
     .where(where);
   const [items] = await db
     .select({
@@ -78,6 +81,7 @@ export async function getSalesIndicators({ db, actor }: ServiceContext, input: u
     })
     .from(saleItems)
     .innerJoin(sales, eq(sales.id, saleItems.saleId))
+    .innerJoin(users, eq(users.id, sales.sellerId))
     .where(and(isNull(saleItems.removedAt), where));
 
   const result: SalesIndicators = { salesCount: totals.salesCount, revenueCents: totals.revenueCents, commissionCents: items.commissionCents };

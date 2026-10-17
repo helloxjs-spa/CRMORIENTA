@@ -349,6 +349,11 @@ describe("consultas e informações sensíveis", () => {
     const forB = await getSale(await ctx(org.ids.supB), saleId);
     expect(forB.teamId).toBe(org.ids.teamA); // atribuição histórica preservada
     expect((await listSales(await ctx(org.ids.supB), { sellerId: mover })).items.map((s) => s.id)).toEqual([saleId]);
+
+    // Filtro de equipe do ADMIN: equipe ATUAL do vendedor (C50), não sales.team_id.
+    const admin = await ctx(org.ids.admin);
+    expect((await listSales(admin, { teamId: org.ids.teamB, sellerId: mover })).items.map((s) => s.id)).toEqual([saleId]);
+    expect((await listSales(admin, { teamId: org.ids.teamA, sellerId: mover })).total).toBe(0);
   });
 
   it("ADMIN vê todas; paginação e contagem usam as mesmas condições", async () => {
