@@ -1,7 +1,7 @@
 {
   // Deploy na Cloudflare (Workers + OpenNext). Guia: docs/DEPLOY_CLOUDFLARE.md
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "crmalan",
+  "name": "crm-orienta",
   "main": ".open-next/worker.js",
   "compatibility_date": "2026-10-01",
   // nodejs_compat: pg (sockets TCP), node:crypto (scrypt, sessões) e AsyncLocalStorage.
