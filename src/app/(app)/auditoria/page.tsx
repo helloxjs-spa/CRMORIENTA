@@ -14,9 +14,11 @@ export const metadata: Metadata = { title: "Auditoria" };
 
 export default async function AuditPage({ searchParams }: PageProps<"/auditoria">) {
   const ctx = await requireServiceContext();
+  // O serviço valida a paginação: valor inválido (texto, não inteiro, ≤ 0, fora do intervalo seguro) → 404.
   const { antes } = await searchParams;
-  const beforeId = typeof antes === "string" && /^\d+$/.test(antes) ? Number(antes) : undefined;
-  const events = await orNotFound(listAuditEvents(ctx, { beforeId }));
+  const raw = Array.isArray(antes) ? antes[0] : antes;
+  const beforeId = raw === undefined ? undefined : Number(raw);
+  const events = await orNotFound(listAuditEvents(ctx, beforeId === undefined ? {} : { beforeId }));
   const last = events.at(-1);
 
   return (

@@ -4,6 +4,7 @@ import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import type { ActionState } from "@/lib/action-state";
 import { login } from "@/server/auth/auth.service";
+import { clientIpFrom } from "@/server/auth/client-ip";
 import { revokeSession, SESSION_COOKIE } from "@/server/auth/session";
 import { db } from "@/server/db/client";
 import { recordAudit } from "@/server/modules/audit/audit.service";
@@ -22,7 +23,7 @@ export async function loginAction(_prev: ActionState, formData: FormData): Promi
       db,
       { email: text(formData, "email"), password: text(formData, "password") },
       {
-        ipAddress: h.get("x-forwarded-for")?.split(",")[0]?.trim() ?? h.get("x-real-ip"),
+        ipAddress: clientIpFrom(h),
         userAgent: h.get("user-agent"),
       },
     );

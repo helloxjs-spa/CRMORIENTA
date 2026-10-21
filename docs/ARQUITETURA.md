@@ -82,7 +82,7 @@ Relação **Empresa → Supervisor → Vendedores**: empresa única (implícita)
 
 | Tabela | Papel | Regras no banco |
 |---|---|---|
-| `sales` | Venda de um lead: vendedor responsável (sempre SELLER), `team_id` = equipe dele quando passou a ser o responsável (**registro histórico**; desde a C50 não define escopo nem agrupamento gerencial), `supervisor_id` histórico, `sale_date` (dia comercial), `total_cents > 0`, `PIX` (à vista) ou `CARD` (parcelas ≥ 1, sem máximo), `status` `ACTIVE`/`REVERSED` | lead e autor imutáveis; responsável SELLER ativo com equipe, equipe/supervisor = os atuais dele na criação e na troca de responsável; criar e mudar status só em READ COMMITTED; lead tem venda válida ⇔ lead ativo em Fechamento (no COMMIT); sem DELETE |
+| `sales` | Venda de um lead: vendedor responsável (sempre SELLER), `team_id` = equipe dele quando passou a ser o responsável (**registro histórico**; desde a C50 não define escopo nem agrupamento gerencial), `supervisor_id` histórico, `sale_date` (dia comercial), `total_cents > 0`, `PIX` (à vista) ou `CARD` (parcelas ≥ 1, sem máximo no banco; teto técnico de 1.000 no serviço, ver §8 "Decisões técnicas"), `status` `ACTIVE`/`REVERSED` | lead e autor imutáveis; responsável SELLER ativo com equipe, equipe/supervisor = os atuais dele na criação e na troca de responsável; criar e mudar status só em READ COMMITTED; lead tem venda válida ⇔ lead ativo em Fechamento (no COMMIT); sem DELETE |
 | `sale_items` | Uma ocorrência de curso vendido (o mesmo curso pode repetir) com **preço de venda próprio** (`price_cents > 0`, migration 004) e snapshots de custo de bolsa e de comissão | curso ativo; custo = o vigente em `course_costs`; nunca apagado: só remoção lógica ou correção de preço (custo e comissão imutáveis); pelo menos um item atual por venda e **`sales.total_cents` = soma dos preços dos itens atuais** (no COMMIT) |
 | `sale_events` | Histórico da venda (append-only): `CREATED`, `UPDATED`, `REVERSED`, `REACTIVATED` | `metadata`, `occurred_at` e `txid` calculados pelo banco; o histórico precisa corresponder exatamente à mudança líquida da transação (no COMMIT); motivo obrigatório em estorno/reativação |
 
@@ -198,7 +198,7 @@ Decisão do cliente: quando o vendedor muda de equipe, **seus leads em aberto o 
 
 ### Leads (Fase 2)
 
-Serviços em [`src/server/modules/leads/leads.service.ts`](../src/server/modules/leads/leads.service.ts); tela em [`src/app/(app)/leads`](../src/app/(app)/leads). O Kanban visual ainda não existe.
+Serviços em [`src/server/modules/leads/leads.service.ts`](../src/server/modules/leads/leads.service.ts); tela em [`src/app/(app)/leads`](../src/app/(app)/leads). O Kanban fica em [`src/app/(app)/kanban`](../src/app/(app)/kanban) (§4).
 
 | Função do serviço | Quem pode | O que faz |
 |---|---|---|
@@ -274,7 +274,7 @@ FU3 vencido -> volta para o Supervisor -> Lixeira (status = TRASHED)
 - **Bloqueio por negociação vencida (C34):** se o SELLER tem alguma negociação ativa com `stage_due_at < agora`, `createLead` e `moveLeadStage` de **outros** leads respondem `NegotiationOverdueError` ("Você possui uma negociação vencida. Atualize-a…"). Login, consulta, drawer e histórico continuam liberados; a própria negociação vencida pode ser atualizada (o que renova o prazo) ou movimentada. O bloqueio some quando não há mais nenhuma vencida. Consulta pelo índice parcial `leads_negotiation_due_idx`.
 - **Quem movimenta (decisão técnica, derivada de C5; confirmar na dúvida 26):** só o SELLER responsável (`leads:move`), pela regra C5 (só o vendedor tem carteira e follow-ups). SUPERVISOR e ADMIN acompanham o quadro e usam as ações administrativas.
 
-**Tela `/kanban`:** colunas Lead cadastrado → Retrabalho; Fechamento aparece bloqueada ("indisponível até a fase de Vendas"); Lixeira continua na tela de Leads. Cada coluna consulta o banco com `listLeads` (escopo + filtros, prazo mais próximo primeiro) e mostra até 50 cards, com o total no cabeçalho e o link "ver todos na lista" quando há mais. Arrastar só realça e aceita os destinos permitidos (calculados no servidor); a mudança aparece na hora e, se a action recusar, o card volta e a mensagem de negócio aparece. Cada card tem também o menu "Mover para" (teclado e celular, onde o arrastar não funciona). O drawer é o mesmo da lista, com os botões "Mover para". O vendedor bloqueado vê o aviso persistente com a quantidade de negociações vencidas e o atalho para a mais antiga (na lista e no Kanban).
+**Tela `/kanban`:** colunas Lead cadastrado → Retrabalho e Fechamento, que só recebe leads pelo registro de venda (nenhum card pode ser arrastado para ela); Lixeira continua na tela de Leads. Cada coluna consulta o banco com `listLeads` (escopo + filtros, prazo mais próximo primeiro) e mostra até 50 cards, com o total no cabeçalho e o link "ver todos na lista" quando há mais. Arrastar só realça e aceita os destinos permitidos (calculados no servidor); a mudança aparece na hora e, se a action recusar, o card volta e a mensagem de negócio aparece. Cada card tem também o menu "Mover para" (teclado e celular, onde o arrastar não funciona). O drawer é o mesmo da lista, com os botões "Mover para". O vendedor bloqueado vê o aviso persistente com a quantidade de negociações vencidas e o atalho para a mais antiga (na lista e no Kanban).
 
 ## 5. Estratégia de auditoria: combinação
 
@@ -325,7 +325,7 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 | 5. Retrabalho + Lixeira | ✅ entregue junto da fase 2 (serviços e telas) | §9 |
 | 6. Vendas | **3a ✅** registro e consultas. **3b ✅** edição, estorno e reativação (backend). **3c ✅** telas e integração com Leads/Kanban | §11, §13, §14, §15 |
 | 7. Pagamentos e parcelas ✅ | Migration 006, cronograma do cartão mantido com a venda, pagamento, lista com situação e período (C52) | §12 |
-| 8. Estorno ✅ | Estorno/reativação com motivo (Etapa 3b) e aba **Estornos** em Vendas. Saída do faturamento, lucro e comissão do período: verificar quando existirem Dashboards/Comissões | §15 |
+| 8. Estorno ✅ | Estorno/reativação com motivo (Etapa 3b) e aba **Estornos** em Vendas. Venda estornada fica fora de faturamento, lucro, comissão e ranking (Dashboard, Ranking e os relatórios de Comissões e Desempenho só contam vendas válidas, C45) | §15 |
 | 9. Ranking ✅ | Quantidade × faturamento, vendedores × equipes, mês/intervalo; visibilidade C42–C44 | §16 |
 | 10. Dashboards ✅ | Vendas, faturamento, comissão, custo/lucro (ADMIN), leads do período, carteira por etapa, conversão, alertas, desempenho por vendedor/equipe, 12 meses (ADMIN) — C45–C48 | §17 |
 | 11. Certificados ✅ | Controle operacional: migration 005, registro por item, lista com período e contagem (C51) | §18 |
@@ -400,6 +400,11 @@ Cada novo domínio entra como `src/server/modules/<domínio>/` (serviço + schem
 - **Desativar supervisor** exige antes definir outro supervisor para a equipe que ele lidera. **Inativar equipe** exige que ela não tenha vendedores ativos nem leads em operação (C22).
 - **Primeiro administrador**: `npm run admin:create` (interativo, senha sem eco, nunca por argumento/arquivo/pipe). Usa o mesmo `hashPassword` e as mesmas validações da aplicação; recusa se já existir ADMIN ou se o e-mail já existir. O usuário e o evento `auth.admin_bootstrapped` (`actor_id = NULL`, metadata `{ source: "admin:create" }`) são gravados na mesma transação, sob um advisory lock contra execuções simultâneas.
 - **Acesso negado em páginas** responde **404** (não revela existência). Não há `loading.tsx` envolvendo páginas com checagem de acesso, para que o status HTTP seja real.
+- **Parcelas do cartão** (decisão técnica, não comercial):
+  - **Teto técnico de 1.000 parcelas por venda** (`MAX_INSTALLMENTS` em [`src/lib/installments.ts`](../src/lib/installments.ts)). Motivo: o cronograma é gravado num único INSERT (5 parâmetros por parcela; o protocolo do PostgreSQL aceita até 65.535, ou seja, cerca de 13 mil parcelas) e exibido inteiro no detalhe da venda; 1.000 dá folga de mais de 13× e equivale a mais de 83 anos de parcelas mensais. Mesmo status de `MAX_ITEMS_PER_REQUEST` e `REPORT_MAX_ROWS`.
+  - **Escopo:** validado no servidor na criação da venda e quando a edição **muda** a quantidade (erro no campo `installmentCount`). Uma venda anterior ao teto, acima dele, continua editável em tudo que não mude a quantidade (o formulário de edição também não a bloqueia). O banco (003/006) não tem máximo e não foi alterado. O campo do formulário tem `max` só como conveniência.
+  - **Mínimo de 1 centavo por parcela:** a quantidade não pode passar do total em centavos (o 006 exige `amount_cents > 0`), na criação e na edição, inclusive quando remover itens ou corrigir preços reduz o total.
+  - **Pendente de registro no Documento Mestre:** o §12.2 não define máximo de parcelas, e a ARQUITETURA (§3 "Vendas") e o comentário do 003 dizem "sem máximo". Pelo §28 do Documento Mestre, este teto precisa ser incorporado lá (ou validado com o cliente) — não feito aqui.
 
 ## 9. Dúvidas em aberto
 
@@ -416,4 +421,5 @@ Resolvidas pelo cliente: C1–C52 (§8). As linhas abaixo mantêm a numeração 
 | 26 | **SUPERVISOR ou ADMIN movimentam etapas** de um lead da equipe? | C5: só o vendedor tem carteira e follow-ups | Não (`leads:move` = SELLER) | Kanban |
 | 27 | **Negociação vencida** deveria bloquear também **parcelas e certificados** quando existirem? | C34 cita só cadastro e movimentação de leads | Não bloqueia | Vendas |
 | 29 | ~~Vendedor sem equipe atual no agrupamento por equipe~~ — **resolvida (complemento da C50):** para o ADMIN, no Dashboard e no Ranking, as vendas válidas dele ficam no grupo "Sem equipe" e continuam nos totais globais; fora do escopo de qualquer SUPERVISOR; SELLER sem mudança | — | — | — |
+| 30 | **Integração do CRM de Expansão** — *parcialmente respondida (2026-10-21):* o código da Expansão vem para este repositório; os usuários são **cadastros separados** (Varejo e Expansão são sistemas diferentes, sem acesso cruzado); quem for cadastrado com o mesmo e-mail e senha nos dois usa as mesmas credenciais, mas cada login vale só para a sua área. **Pendente:** banco — juntar com o do Varejo (tendência do cliente) ou manter separado | Login com escolha de área (Varejo/Expansão) | `/login/expansao` mostra "em integração", sem formulário | Login |
 | 28 | ~~Conversão × Lixeira~~ — **resolvida (opção b):** o denominador conta só os leads cadastrados no período que não estão hoje na Lixeira, em todos os perfis; o numerador não muda; sem leads elegíveis → "Indisponível" | — | — | — |

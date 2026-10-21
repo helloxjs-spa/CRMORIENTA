@@ -35,6 +35,8 @@ import {
   type SaleReversalPlan,
 } from "@/server/modules/leads/leads.service";
 import {
+  assertInstallmentCountWithinLimit,
+  assertInstallmentsFitTotal,
   assertScheduleChangeable,
   cancelOpenInstallments,
   createInstallmentSchedule,
@@ -44,9 +46,8 @@ import {
 import { idSchema, parseInput } from "@/server/validation";
 
 /**
- * Vendas — Etapa 3a: registro e consultas (Documento Mestre §11, §13, §14;
- * decisões C36–C38 em docs/ARQUITETURA.md). Estorno, reativação e edição
- * ficam para a Etapa 3b.
+ * Vendas: registro, consultas, edição, estorno e reativação (Documento Mestre
+ * §11, §13, §14, §15; decisões C36–C40 e C50 em docs/ARQUITETURA.md).
  *
  * O banco (migration 003) garante integridade estrutural, snapshots de custo
  * conferidos, carimbos de tempo, coerência lead × vendas e a auditoria
@@ -216,7 +217,7 @@ const listFiltersSchema = z.strictObject({
   pageSize: z.union(SALE_PAGE_SIZES.map((size) => z.literal(size))).optional(),
   status: z.enum(SALE_STATUSES).optional(),
   sellerId: idSchema.optional(),
-  /** Equipe de atribuição da venda (sales.team_id). */
+  /** Equipe ATUAL do vendedor responsável (users.team_id, C50); sales.team_id é só histórico. */
   teamId: idSchema.optional(),
   leadId: idSchema.optional(),
   paymentMethod: z.enum(PAYMENT_METHODS).optional(),
@@ -263,6 +264,10 @@ export async function createSale(ctx: ServiceContext, input: unknown): Promise<C
   if (actor.role !== "SELLER" && !data.sellerId) throw new ValidationError(SELLER_REQUIRED, { sellerId: [SELLER_REQUIRED] });
   const sellerId = data.sellerId ?? actor.userId;
   const saleDate = data.saleDate ?? businessToday();
+  // Antes de travar ou gravar qualquer coisa: teto técnico de parcelas e cada
+  // parcela com ao menos 1 centavo.
+  assertInstallmentCountWithinLimit(data.installmentCount);
+  assertInstallmentsFitTotal(data.paymentMethod, data.installmentCount, sumPrices(data.items));
 
   try {
     return await runTransaction(db, async (tx) => {
@@ -616,7 +621,11 @@ export async function updateSale(ctx: ServiceContext, rawId: unknown, input: unk
       throw new ValidationError("Informe a quantidade de parcelas do cartão.", { installmentCount: ["Informe a quantidade de parcelas do cartão."] });
     }
     if (paymentMethod !== sale.paymentMethod) changes.paymentMethod = paymentMethod;
-    if (installmentCount !== sale.installmentCount) changes.installmentCount = installmentCount;
+    if (installmentCount !== sale.installmentCount) {
+      // Teto técnico só quando a quantidade muda: venda antiga acima dele segue editável no resto.
+      assertInstallmentCountWithinLimit(installmentCount);
+      changes.installmentCount = installmentCount;
+    }
 
     const removeIds = data.removeItemIds ?? [];
     const repriceRequests = data.repriceItems ?? [];
@@ -644,6 +653,8 @@ export async function updateSale(ctx: ServiceContext, rawId: unknown, input: unk
       ...toAdd,
     ]);
     if (newTotal !== sale.totalCents) changes.totalCents = newTotal;
+    // Antes de gravar: novo total (itens removidos/preços corrigidos) ou nova quantidade.
+    assertInstallmentsFitTotal(paymentMethod, installmentCount, newTotal);
 
     if (Object.keys(changes).length === 0 && removeIds.length === 0 && reprices.length === 0 && toAdd.length === 0) {
       return { saleId: id, version: data.expectedVersion, changed: false };

@@ -30,3 +30,22 @@ export const REPORT_FILE_SLUGS: Record<ReportType, string> = {
 export const REPORT_MAX_ROWS = 10_000;
 
 export const REPORT_TOO_MANY_ROWS = `O relatório passa de ${REPORT_MAX_ROWS.toLocaleString("pt-BR")} linhas. Refine os filtros (por exemplo, um período menor).`;
+
+/**
+ * Erro da exportação devolvido à tela em `/relatorios?erro=<código>`. A URL
+ * carrega só o código; a mensagem exibida é sempre uma destas (texto da URL
+ * nunca é mostrado).
+ */
+export const REPORT_ERROR_MESSAGES = {
+  permissao: "Você não tem permissão para exportar este relatório.",
+  periodo: "A data inicial deve ser igual ou anterior à final.",
+  limite: REPORT_TOO_MANY_ROWS,
+  filtro: "Filtros inválidos. Confira os campos e tente novamente.",
+  falha: "Não foi possível gerar o relatório. Tente novamente.",
+} as const;
+export type ReportErrorCode = keyof typeof REPORT_ERROR_MESSAGES;
+
+/** Mensagem fixa do código; código desconhecido → mensagem genérica. */
+export function reportErrorMessage(code: string): string {
+  return Object.hasOwn(REPORT_ERROR_MESSAGES, code) ? REPORT_ERROR_MESSAGES[code as ReportErrorCode] : REPORT_ERROR_MESSAGES.falha;
+}

@@ -215,7 +215,7 @@ describe("movimentação pela action (tentativas de burlar a máquina de estados
     await as(org.ids.sellerA1);
     const attempts = {
       FOLLOW_UP_3: "Movimentação não permitida: de Lead cadastrado para Follow-up 3.",
-      CLOSED: "Fechamento só acontece ao registrar uma venda (disponível na fase de Vendas).",
+      CLOSED: "Fechamento só acontece ao registrar uma venda.",
       REWORK: "Retrabalho só acontece por redistribuição ou recuperação da Lixeira, feitas pelo supervisor.",
     };
     for (const [toStage, message] of Object.entries(attempts)) {

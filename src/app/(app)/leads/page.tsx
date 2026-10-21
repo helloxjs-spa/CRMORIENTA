@@ -19,7 +19,7 @@ import { LeadsResults, LeadsResultsSkeleton, type Viewer } from "./leads-results
 import { LeadsToolbar, type ToolbarOptions } from "./leads-toolbar";
 import { NegotiationBanner } from "./negotiation-banner";
 import { leadCreationMode } from "./policy";
-import { leadsHref, parseLeadsParams, type LeadsParams, type QueueFilter } from "./search-params";
+import { CREATED_RANGE_INVERTED, createdRangeInverted, leadsHref, parseLeadsParams, type LeadsParams, type QueueFilter } from "./search-params";
 
 export const metadata: Metadata = { title: "Leads" };
 
@@ -51,6 +51,7 @@ export default async function LeadsPage({ searchParams }: PageProps<"/leads">) {
 
   const toolbarOptions: ToolbarOptions = {
     stages: true,
+    createdRange: true,
     courses: courses.map((c) => ({ id: c.id, label: `${courseLabel(c)}${c.active ? "" : " (inativo)"}` })),
     sellers: canManage
       ? sellers.map((s) => ({ id: s.id, label: `${s.name}${isAdmin && s.teamName ? ` — ${s.teamName}` : ""}${s.active ? "" : " (inativo)"}` }))
@@ -121,6 +122,12 @@ export default async function LeadsPage({ searchParams }: PageProps<"/leads">) {
       )}
 
       <LeadsToolbar params={params} options={toolbarOptions} />
+
+      {createdRangeInverted(params) && (
+        <p role="alert" className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 ring-1 ring-amber-200">
+          {CREATED_RANGE_INVERTED}
+        </p>
+      )}
 
       <Suspense key={leadsHref(params, { lead: undefined })} fallback={<LeadsResultsSkeleton />}>
         <LeadsResults ctx={ctx} params={params} viewer={viewer} />

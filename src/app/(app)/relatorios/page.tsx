@@ -9,7 +9,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { CERTIFICATE_DATE_FIELD_LABELS, CERTIFICATE_DATE_FIELDS } from "@/lib/certificates";
 import { INSTALLMENT_FILTER_LABELS, INSTALLMENT_FILTERS } from "@/lib/installments";
 import { monthRange } from "@/lib/ranking";
-import { REPORT_LABELS, REPORT_MAX_ROWS, REPORT_TYPES, type ReportType } from "@/lib/reports";
+import { REPORT_LABELS, REPORT_MAX_ROWS, REPORT_TYPES, reportErrorMessage, type ReportType } from "@/lib/reports";
 import { SALE_STATUS_LABELS } from "@/lib/sales";
 import { hasPermission } from "@/server/authz/permissions";
 import { BUSINESS_RULES } from "@/server/config/business-rules";
@@ -25,8 +25,10 @@ export const metadata: Metadata = { title: "Relatórios" };
 export default async function ReportsPage({ searchParams }: PageProps<"/relatorios">) {
   const ctx = await requireServiceContext();
   if (!hasPermission(ctx.actor, "reports:export")) notFound();
+  // Só o código vem da URL; o texto exibido é sempre uma mensagem fixa.
   const raw = (await searchParams).erro;
-  const error = (Array.isArray(raw) ? raw[0] : raw)?.slice(0, 300);
+  const code = Array.isArray(raw) ? raw[0] : raw;
+  const error = code === undefined ? undefined : reportErrorMessage(code);
   const withFinance = hasPermission(ctx.actor, "finance:viewCostAndProfit");
   const month = monthRange(new Intl.DateTimeFormat("en-CA", { timeZone: BUSINESS_RULES.timezone }).format(new Date()).slice(0, 7));
 

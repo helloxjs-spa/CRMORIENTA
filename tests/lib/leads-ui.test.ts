@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { leadActionsFor, leadCreationMode, moveTargetsFor } from "@/app/(app)/leads/policy";
-import { leadsHref, parseLeadsParams, toListFilters } from "@/app/(app)/leads/search-params";
+import { boardParams, createdRangeInverted, hasResultFilters, leadsHref, parseLeadsParams, toListFilters } from "@/app/(app)/leads/search-params";
 import type { Actor } from "@/server/authz/actor";
 import { formatRelativeDateTime } from "@/lib/format";
 import { describeLeadEvent } from "@/lib/lead-timeline";
@@ -160,6 +160,38 @@ describe("URL da tela de Leads", () => {
       teamId: undefined,
     });
     expect(toListFilters(params, { canManage: true, canFilterTeam: true })).toMatchObject({ status: "TRASHED", ownerId: id, teamId: id });
+  });
+
+  it("data de cadastro De/Até: lê só datas válidas, volta pela URL e vira createdFrom/createdTo", () => {
+    const params = parseLeadsParams({ de: "2026-09-01", ate: "2026-09-30" });
+    expect(params).toMatchObject({ from: "2026-09-01", to: "2026-09-30" });
+    const href = leadsHref(params);
+    expect(href).toBe("/leads?de=2026-09-01&ate=2026-09-30");
+    expect(parseLeadsParams(Object.fromEntries(new URL(href, "http://x").searchParams))).toEqual(params);
+    expect(hasResultFilters(params)).toBe(true);
+    expect(createdRangeInverted(params)).toBe(false);
+    expect(toListFilters(params, { canManage: false, canFilterTeam: false })).toMatchObject({ createdFrom: "2026-09-01", createdTo: "2026-09-30" });
+    expect(parseLeadsParams({ de: "2026-02-30", ate: "30/09/2026" })).toMatchObject({ from: undefined, to: undefined });
+    expect(toListFilters(parseLeadsParams({ de: "2026-09-01" }), { canManage: true, canFilterTeam: true })).toMatchObject({
+      createdFrom: "2026-09-01",
+      createdTo: undefined,
+    });
+  });
+
+  it("intervalo invertido: a tela avisa e o filtro de data não é aplicado", () => {
+    const params = parseLeadsParams({ de: "2026-09-30", ate: "2026-09-01" });
+    expect(createdRangeInverted(params)).toBe(true);
+    const filters = toListFilters(params, { canManage: true, canFilterTeam: true });
+    expect(filters).not.toHaveProperty("createdFrom");
+    expect(filters).not.toHaveProperty("createdTo");
+  });
+
+  it("Kanban não aplica nem repassa o filtro de data de cadastro", () => {
+    const id = "6f1c2a0e-1b2c-4d3e-8f90-123456789abc";
+    const board = boardParams(parseLeadsParams({ de: "2026-09-01", ate: "2026-09-30", etapa: "follow-up-1", vendedor: id }), true);
+    expect(board).toMatchObject({ from: undefined, to: undefined, stage: undefined, view: "carteira", seller: id });
+    expect(leadsHref(board, {}, "/kanban")).toBe(`/kanban?vendedor=${id}`);
+    expect(hasResultFilters(boardParams(parseLeadsParams({ de: "2026-09-01" }), false))).toBe(false);
   });
 });
 

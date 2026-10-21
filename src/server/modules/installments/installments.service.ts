@@ -1,7 +1,7 @@
 import { and, asc, count, eq, gte, ilike, isNull, lt, lte, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { z } from "zod";
-import { buildInstallmentSchedule, INSTALLMENT_FILTERS, INSTALLMENT_PAGE_SIZES } from "@/lib/installments";
+import { buildInstallmentSchedule, INSTALLMENT_FILTERS, INSTALLMENT_PAGE_SIZES, MAX_INSTALLMENTS } from "@/lib/installments";
 import type { Actor } from "@/server/authz/actor";
 import { assertPermission } from "@/server/authz/permissions";
 import { ownedScope } from "@/server/authz/scope";
@@ -34,6 +34,34 @@ export const INSTALLMENTS_PAID_LOCKED =
   "Esta venda tem parcela paga: total, forma de pagamento, quantidade de parcelas e data da venda não podem mais ser alterados.";
 export const INSTALLMENT_ALREADY_PAID = "Esta parcela já está paga.";
 export const INSTALLMENT_NOT_OPEN = "Só parcelas em aberto podem ser marcadas como pagas. Atualize a página.";
+export const INSTALLMENTS_EXCEED_TOTAL =
+  "A quantidade de parcelas não pode ser maior que o valor da venda em centavos: cada parcela precisa ter pelo menos R$ 0,01.";
+
+/** Erro de quantidade de parcelas acima do teto técnico do sistema (MAX_INSTALLMENTS), no campo `installmentCount`. */
+export const INSTALLMENTS_OVER_LIMIT = `Use no máximo ${MAX_INSTALLMENTS.toLocaleString("pt-BR")} parcelas (limite técnico do sistema).`;
+
+/**
+ * Teto técnico (MAX_INSTALLMENTS). Chamar na criação e SÓ quando a edição
+ * altera a quantidade: uma venda antiga acima do teto continua editável no resto.
+ */
+export function assertInstallmentCountWithinLimit(installmentCount: number | null | undefined): void {
+  if (installmentCount != null && installmentCount > MAX_INSTALLMENTS) {
+    throw new ValidationError(INSTALLMENTS_OVER_LIMIT, { installmentCount: [INSTALLMENTS_OVER_LIMIT] });
+  }
+}
+
+/**
+ * Cartão: a quantidade de parcelas não pode passar do total da venda em
+ * centavos, para que cada parcela tenha pelo menos 1 centavo (o banco exige
+ * amount_cents > 0, 006). Chamar ANTES de gravar a venda, na criação e na
+ * edição (inclusive quando a remoção de itens ou a correção de preços reduz o
+ * total). Independe do teto técnico (assertInstallmentCountWithinLimit).
+ */
+export function assertInstallmentsFitTotal(paymentMethod: PaymentMethod, installmentCount: number | null | undefined, totalCents: number): void {
+  if (paymentMethod === "CARD" && installmentCount != null && installmentCount > totalCents) {
+    throw new ValidationError(INSTALLMENTS_EXCEED_TOTAL, { installmentCount: [INSTALLMENTS_EXCEED_TOTAL] });
+  }
+}
 
 /** Dados da venda que definem o cronograma. */
 export type ScheduleSale = {

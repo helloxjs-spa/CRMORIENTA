@@ -104,6 +104,6 @@ npm run cf:preview
 
 ## 8. Pontos de atenção em produção
 
-- **Limite de tentativas de login** (`rate-limit.ts`) é em memória: no Workers vale por instância (isolate), então é mais fraco. Para um limite global, mover para uma tabela no Postgres (exige migration) ou usar Rate Limiting da Cloudflare (WAF) na rota `/login`.
+- **Limite de tentativas de login** (`rate-limit.ts`) é em memória: no Workers vale por instância (isolate), então é mais fraco. A chave é e-mail + IP; o IP vem de `CF-Connecting-IP`, preenchido pela Cloudflare (`src/server/auth/client-ip.ts`). Sem esse cabeçalho o IP fica desconhecido: `X-Forwarded-For` (cujo primeiro valor é enviado pelo cliente) e `X-Real-IP` só são lidos com `NODE_ENV` `development` (`next dev`) ou `test`. Em qualquer build de produção (o Worker, `cf:preview`, `next start`) eles são ignorados. Para um limite global, mover para uma tabela no Postgres (exige migration) ou usar Rate Limiting da Cloudflare (WAF) na rota `/login`.
 - **Domínio próprio:** Workers › Settings › Domains & Routes. O cookie de sessão é por host.
 - **Observabilidade:** `observability.enabled` está ligado no `wrangler.jsonc` (Workers Logs).

@@ -13,6 +13,8 @@ export type FilterOption = { id: string; label: string };
 
 export type ToolbarOptions = {
   stages: boolean;
+  /** Filtro De/Até pela data de cadastro (só a tela /leads; o Kanban não aplica). */
+  createdRange?: boolean;
   courses: FilterOption[];
   sellers?: FilterOption[];
   teams?: FilterOption[];
@@ -20,6 +22,8 @@ export type ToolbarOptions = {
 
 const selectClasses =
   "h-10 w-full rounded-lg border-0 bg-white px-3 pr-8 text-sm text-slate-800 shadow-sm ring-1 ring-inset ring-slate-300 focus:ring-2 focus:ring-brand-600 md:w-auto md:max-w-52";
+const dateClasses =
+  "h-10 w-full rounded-lg border-0 bg-white px-3 text-sm text-slate-800 shadow-sm ring-1 ring-inset ring-slate-300 focus:ring-2 focus:ring-brand-600 md:w-auto";
 
 /**
  * Busca e filtros da tela de Leads. Todo o estado fica na URL (a página do
@@ -60,7 +64,7 @@ export function LeadsToolbar({
     debounce.current = setTimeout(() => navigate({ q: value.trim() || undefined }), 400);
   };
 
-  const activeFilters = [params.stage, params.course, params.seller, params.team].filter(Boolean).length;
+  const activeFilters = [params.stage, params.course, params.seller, params.team, params.from, params.to].filter(Boolean).length;
   const showStage = options.stages && params.view !== "lixeira";
 
   const selects = (
@@ -118,6 +122,30 @@ export function LeadsToolbar({
           ))}
         </select>
       )}
+      {options.createdRange && (
+        <>
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <span className="w-24 shrink-0 md:w-auto">Cadastro de</span>
+            <input
+              type="date"
+              aria-label="Data de cadastro: de"
+              className={dateClasses}
+              value={params.from ?? ""}
+              onChange={(e) => navigate({ from: e.target.value || undefined })}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <span className="w-24 shrink-0 md:w-auto">até</span>
+            <input
+              type="date"
+              aria-label="Data de cadastro: até"
+              className={dateClasses}
+              value={params.to ?? ""}
+              onChange={(e) => navigate({ to: e.target.value || undefined })}
+            />
+          </label>
+        </>
+      )}
     </>
   );
 
@@ -157,7 +185,7 @@ export function LeadsToolbar({
             type="button"
             onClick={() => {
               setQuery("");
-              navigate({ q: undefined, stage: undefined, course: undefined, seller: undefined, team: undefined });
+              navigate({ q: undefined, stage: undefined, course: undefined, seller: undefined, team: undefined, from: undefined, to: undefined });
             }}
             className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"
           >

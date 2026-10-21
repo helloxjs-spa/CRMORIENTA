@@ -101,7 +101,7 @@ describe("transições inválidas são recusadas no backend", () => {
     await putIn(id, "FOLLOW_UP_3");
     const seller = await org.ctx(org.ids.sellerA1);
     const message = (to: LeadStage) => moveLeadStage(seller, id, { toStage: to }).catch((e: Error) => e.message);
-    expect(await message("CLOSED")).toBe("Fechamento só acontece ao registrar uma venda (disponível na fase de Vendas).");
+    expect(await message("CLOSED")).toBe("Fechamento só acontece ao registrar uma venda.");
     expect(await message("REWORK")).toBe("Retrabalho só acontece por redistribuição ou recuperação da Lixeira, feitas pelo supervisor.");
     expect(await message("FOLLOW_UP_2")).toBe("Movimentação não permitida: de Follow-up 3 para Follow-up 2.");
     expect(await message("FOLLOW_UP_3")).toBe("O lead já está em Follow-up 3.");

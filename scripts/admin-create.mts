@@ -41,7 +41,6 @@ async function ask(question: string): Promise<string> {
   }
 }
 
-/** Lê uma linha sem exibir os caracteres digitados. */
 function askHidden(question: string): Promise<string> {
   const stdin = process.stdin;
   return new Promise((resolve, reject) => {

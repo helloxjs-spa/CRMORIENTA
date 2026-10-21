@@ -985,7 +985,7 @@ export async function moveLeadStage({ db, actor }: ServiceContext, rawId: unknow
 
     if (toStage === lead.stage) throw new ValidationError(`O lead já está em ${STAGE_LABELS[toStage]}.`);
     if (toStage === "CLOSED") {
-      throw new ValidationError("Fechamento só acontece ao registrar uma venda (disponível na fase de Vendas).");
+      throw new ValidationError("Fechamento só acontece ao registrar uma venda.");
     }
     if (toStage === "REWORK") {
       throw new ValidationError("Retrabalho só acontece por redistribuição ou recuperação da Lixeira, feitas pelo supervisor.");

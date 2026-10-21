@@ -1,5 +1,7 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { parseLeadsParams, toListFilters } from "@/app/(app)/leads/search-params";
+import { BUSINESS_RULES } from "@/server/config/business-rules";
 import type { DatabaseHandle } from "@/server/db/connect";
 import { courses, leads } from "@/server/db/schema";
 import { ForbiddenError, ValidationError } from "@/server/errors";
@@ -198,5 +200,28 @@ describe("opções de filtro", () => {
       ["Pedagogia", true],
     ]);
     expect(Object.keys(options[0]).sort()).toEqual(["active", "id", "institutionName", "name"]);
+  });
+});
+
+describe("filtro por data de cadastro na tela de Leads (URL → filtros → serviço)", () => {
+  const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: BUSINESS_RULES.timezone }).format(new Date());
+  const fromUrl = async (userId: string, query: Record<string, string>, canManage: boolean) =>
+    listLeads(await org.ctx(userId), toListFilters(parseLeadsParams(query), { canManage, canFilterTeam: false }));
+
+  it("De/Até pelo dia de cadastro, no mesmo escopo; vendedor continua só com a própria carteira", async () => {
+    const seller = (await fromUrl(org.ids.sellerA1, {}, false)).total;
+    const supervisor = (await fromUrl(org.ids.supA, {}, true)).total;
+    expect(seller).toBeGreaterThan(0);
+    expect((await fromUrl(org.ids.sellerA1, { de: today(), ate: today() }, false)).total).toBe(seller);
+    expect((await fromUrl(org.ids.sellerA1, { de: today() }, false)).total).toBe(seller);
+    expect((await fromUrl(org.ids.sellerA1, { de: "2020-01-01", ate: "2020-12-31" }, false)).total).toBe(0);
+    expect((await fromUrl(org.ids.supA, { de: today(), ate: today() }, true)).total).toBe(supervisor);
+    expect((await fromUrl(org.ids.supA, { ate: "2020-12-31" }, true)).total).toBe(0);
+  });
+
+  it("intervalo invertido não é aplicado (a tela avisa); datas inválidas são ignoradas", async () => {
+    const seller = (await fromUrl(org.ids.sellerA1, {}, false)).total;
+    expect((await fromUrl(org.ids.sellerA1, { de: today(), ate: "2020-01-01" }, false)).total).toBe(seller);
+    expect((await fromUrl(org.ids.sellerA1, { de: "2020-02-30", ate: "ontem" }, false)).total).toBe(seller);
   });
 });

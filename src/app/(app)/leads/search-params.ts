@@ -1,4 +1,5 @@
 import { LEAD_PAGE_SIZES, stageFromSlug, stageToSlug, type LeadPageSize } from "@/lib/leads";
+import { isValidDate } from "@/lib/ranking";
 import type { LeadStage } from "@/server/db/schema";
 
 /**
@@ -17,6 +18,9 @@ export type LeadsParams = {
   course?: string;
   seller?: string;
   team?: string;
+  /** Data de cadastro De/Até ("AAAA-MM-DD", dia no fuso do negócio). Só a tela /leads aplica. */
+  from?: string;
+  to?: string;
   queue: QueueFilter;
   page: number;
   size: LeadPageSize;
@@ -38,6 +42,19 @@ function uuid(raw: RawParams, key: string): string | undefined {
   return value && UUID.test(value) ? value : undefined;
 }
 
+function date(raw: RawParams, key: string): string | undefined {
+  const value = first(raw, key);
+  return value && isValidDate(value) ? value : undefined;
+}
+
+export const CREATED_RANGE_INVERTED =
+  "A data inicial do cadastro deve ser igual ou anterior à final. O filtro por data de cadastro não foi aplicado.";
+
+/** Intervalo De/Até invertido: a tela avisa e não aplica o filtro de data. */
+export function createdRangeInverted(p: Pick<LeadsParams, "from" | "to">): boolean {
+  return !!p.from && !!p.to && p.from > p.to;
+}
+
 export function parseLeadsParams(raw: RawParams): LeadsParams {
   const view = first(raw, "visao");
   const queue = first(raw, "motivo");
@@ -50,6 +67,8 @@ export function parseLeadsParams(raw: RawParams): LeadsParams {
     course: uuid(raw, "curso"),
     seller: uuid(raw, "vendedor"),
     team: uuid(raw, "equipe"),
+    from: date(raw, "de"),
+    to: date(raw, "ate"),
     queue: queue === "sem-responsavel" || queue === "follow-up-3" ? queue : "todos",
     page: Number.isInteger(page) && page > 1 ? page : 1,
     size: (LEAD_PAGE_SIZES as readonly number[]).includes(size) ? (size as LeadPageSize) : LEAD_PAGE_SIZES[0],
@@ -70,6 +89,8 @@ export function leadsHref(params: LeadsParams, overrides: Partial<LeadsParams> =
   if (p.course) query.set("curso", p.course);
   if (p.seller) query.set("vendedor", p.seller);
   if (p.team) query.set("equipe", p.team);
+  if (p.from) query.set("de", p.from);
+  if (p.to) query.set("ate", p.to);
   if (p.page > 1) query.set("pagina", String(p.page));
   if (p.size !== LEAD_PAGE_SIZES[0]) query.set("por", String(p.size));
   if (p.lead) query.set("lead", p.lead);
@@ -77,9 +98,26 @@ export function leadsHref(params: LeadsParams, overrides: Partial<LeadsParams> =
   return text ? `${basePath}?${text}` : basePath;
 }
 
+/**
+ * Parâmetros do Kanban: sempre a carteira ativa, sem etapa (cada coluna é uma
+ * etapa) e sem filtro por data de cadastro (`de`/`ate` não são aplicados nem
+ * repassados nos links); SELLER sem filtro de vendedor/equipe.
+ */
+export function boardParams(raw: LeadsParams, canManage: boolean): LeadsParams {
+  return {
+    ...raw,
+    view: "carteira",
+    stage: undefined,
+    from: undefined,
+    to: undefined,
+    page: 1,
+    ...(canManage ? {} : { seller: undefined, team: undefined }),
+  };
+}
+
 /** Filtros que mudam o conjunto de resultados (para saber se há filtro ativo). */
 export function hasResultFilters(p: LeadsParams): boolean {
-  return !!(p.q || p.stage || p.course || p.seller || p.team);
+  return !!(p.q || p.stage || p.course || p.seller || p.team || p.from || p.to);
 }
 
 const QUEUE_TO_SERVICE = { todos: "ALL", "sem-responsavel": "UNASSIGNED", "follow-up-3": "FOLLOW_UP_3_EXPIRED" } as const;
@@ -90,7 +128,9 @@ const QUEUE_TO_SERVICE = { todos: "ALL", "sem-responsavel": "UNASSIGNED", "follo
  */
 export function toListFilters(p: LeadsParams, { canManage, canFilterTeam }: { canManage: boolean; canFilterTeam: boolean }) {
   const view: LeadsView = canManage ? p.view : "carteira";
+  const created = createdRangeInverted(p) ? {} : { createdFrom: p.from, createdTo: p.to };
   return {
+    ...created,
     page: p.page,
     pageSize: p.size,
     search: p.q,

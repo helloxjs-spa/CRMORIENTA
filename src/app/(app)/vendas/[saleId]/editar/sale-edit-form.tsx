@@ -8,6 +8,7 @@ import { Field, FormAlert, Input, Select, SubmitButton } from "@/components/ui/f
 import { useToast } from "@/components/ui/toast";
 import { fieldErrorsOf, IDLE, type ActionState } from "@/lib/action-state";
 import { cn } from "@/lib/cn";
+import { MAX_INSTALLMENTS } from "@/lib/installments";
 import { centsToInput, formatBRL, parseBRLToCents } from "@/lib/money";
 import { previewTotalCents, SALE_CHANGED_CONCURRENTLY } from "@/lib/sales";
 import type { PaymentMethod } from "@/server/db/schema";
@@ -200,6 +201,8 @@ export function SaleEditForm({
           errors={errors}
           idPrefix="edit-sale"
           sendEmptyInstallments
+          // Venda antiga acima do teto técnico: o navegador não bloqueia salvar outras mudanças.
+          maxInstallments={Math.max(MAX_INSTALLMENTS, sale.installmentCount ?? 0)}
         />
       )}
 

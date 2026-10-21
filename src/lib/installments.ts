@@ -3,6 +3,15 @@
  * O banco (006_installments.sql) confere no COMMIT exatamente esta regra.
  */
 
+/**
+ * Teto TÉCNICO de parcelas por venda (não é regra comercial; ver
+ * docs/ARQUITETURA.md, "Decisões técnicas"). O cronograma é gravado num único
+ * INSERT (5 parâmetros por parcela; o protocolo do PostgreSQL aceita até 65.535)
+ * e exibido inteiro no detalhe da venda. Vale na criação e quando a quantidade
+ * é alterada; vendas antigas acima dele não são bloqueadas em outras edições.
+ */
+export const MAX_INSTALLMENTS = 1_000;
+
 export const INSTALLMENT_PAGE_SIZES = [25, 50, 100] as const;
 export type InstallmentPageSize = (typeof INSTALLMENT_PAGE_SIZES)[number];
 

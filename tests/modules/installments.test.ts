@@ -2,12 +2,15 @@ import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BUSINESS_RULES } from "@/server/config/business-rules";
 import type { DatabaseHandle } from "@/server/db/connect";
-import { auditEvents, installments } from "@/server/db/schema";
+import { MAX_INSTALLMENTS } from "@/lib/installments";
+import { auditEvents, installments, saleItems, sales } from "@/server/db/schema";
 import { ConflictError, NotFoundError, ValidationError } from "@/server/errors";
 import { getSalesIndicators } from "@/server/modules/dashboard/dashboard.service";
 import {
   getSaleInstallments,
   INSTALLMENT_NOT_OPEN,
+  INSTALLMENTS_EXCEED_TOTAL,
+  INSTALLMENTS_OVER_LIMIT,
   INSTALLMENTS_PAID_LOCKED,
   listInstallments,
   markInstallmentPaid,
@@ -54,6 +57,17 @@ const schedule = async (saleId: string) =>
 const allRows = (saleId: string) => handle.db.select().from(installments).where(eq(installments.saleId, saleId));
 const version = async (saleId: string) => (await getSale(await ctx(org.ids.admin), saleId)).version;
 const pay = async (userId: string, installmentId: string) => markInstallmentPaid(await ctx(userId), { installmentId });
+/** Retrato direto do banco: total e situação da venda, todos os itens (inclusive removidos), parcelas e versão. */
+const saleState = async (saleId: string) => ({
+  sale: (await handle.db.select({ totalCents: sales.totalCents, installmentCount: sales.installmentCount, status: sales.status }).from(sales).where(eq(sales.id, saleId)))[0],
+  items: await handle.db
+    .select({ id: saleItems.id, priceCents: saleItems.priceCents, removedAt: saleItems.removedAt })
+    .from(saleItems)
+    .where(eq(saleItems.saleId, saleId))
+    .orderBy(asc(saleItems.id)),
+  installments: (await allRows(saleId)).sort((a, b) => a.id.localeCompare(b.id)),
+  version: await version(saleId),
+});
 
 beforeAll(async () => {
   handle = await createTestDatabase();
@@ -156,8 +170,8 @@ describe("venda alterada depois do cronograma", () => {
     const saleId = await sale(org.ids.sellerA1, { count: 3 });
     const [first] = await schedule(saleId);
     await pay(org.ids.sellerA1, first.id);
-    const before = await schedule(saleId);
-    const v = await version(saleId);
+    const before = await saleState(saleId);
+    const v = before.version;
 
     for (const [userId, input] of [
       [org.ids.sellerA1, { addItems: [{ courseId: course, priceCents: 5_000 }] }],
@@ -166,12 +180,114 @@ describe("venda alterada depois do cronograma", () => {
       [org.ids.admin, { saleDate: "2026-03-20" }],
     ] as const) {
       await expect(updateSale(await ctx(userId), saleId, { expectedVersion: v, ...input })).rejects.toThrow(INSTALLMENTS_PAID_LOCKED);
+      // Nada mudou: total, itens (o incluído não ficou), parcelas (a paga continua paga) e versão.
+      expect(await saleState(saleId)).toEqual(before);
     }
-    expect(await schedule(saleId)).toEqual(before);
-    expect(await version(saleId)).toBe(v);
+    expect(before.items).toHaveLength(1);
     // Troca de responsável continua possível.
     await updateSale(await ctx(org.ids.supA), saleId, { expectedVersion: v, sellerId: org.ids.sellerA2 });
   });
+});
+
+describe("quantidade de parcelas × total (cada parcela com pelo menos R$ 0,01)", () => {
+  const exceeds = { fieldErrors: { installmentCount: [INSTALLMENTS_EXCEED_TOTAL] } };
+
+  it("criação: quantidade maior que o total em centavos é recusada antes de gravar; igual ao total é aceita", async () => {
+    const lead = await createLead(await ctx(org.ids.sellerA1), { name: "Cliente Centavos", phone: nextPhone(), interestCourseId: course });
+    const input = (installmentCount: number) => ({
+      requestId: crypto.randomUUID(),
+      leadId: lead.id,
+      paymentMethod: "CARD" as const,
+      installmentCount,
+      items: [{ courseId: course, priceCents: 100 }],
+    });
+    const rejected = input(101);
+    const error = await createSale(await ctx(org.ids.sellerA1), rejected).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toMatchObject(exceeds);
+    expect(await allRows(rejected.requestId)).toEqual([]);
+    expect(await handle.db.select().from(sales).where(eq(sales.id, rejected.requestId))).toEqual([]);
+
+    const { saleId } = await createSale(await ctx(org.ids.sellerA1), input(100));
+    const rows = await schedule(saleId);
+    expect(rows).toHaveLength(100);
+    expect(rows.every((p) => p.amountCents === 1)).toBe(true);
+  });
+
+  it("edição: remover item, corrigir preço ou aumentar parcelas deixando o total insuficiente é recusado e nada muda", async () => {
+    const saleId = await sale(org.ids.sellerA1, { prices: [500, 50], count: 100 });
+    const items = (await getSale(await ctx(org.ids.admin), saleId)).items;
+    const big = items.find((i) => i.priceCents === 500)!;
+    const before = await saleState(saleId);
+    const v = before.version;
+    const supervisor = await ctx(org.ids.supA);
+
+    for (const input of [
+      { removeItemIds: [big.id] }, // total cai para 50 centavos
+      { repriceItems: [{ itemId: big.id, priceCents: 40 }] }, // total cai para 90 centavos
+      { installmentCount: 551 }, // mais parcelas que centavos (abaixo do teto técnico)
+    ]) {
+      const error = await updateSale(supervisor, saleId, { expectedVersion: v, ...input }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject(exceeds);
+      // Nada mudou: total, itens (nenhum removido nem com preço novo), parcelas e versão.
+      expect(await saleState(saleId)).toEqual(before);
+    }
+    expect(before.sale).toMatchObject({ totalCents: 550, installmentCount: 100 });
+    expect(before.items.every((i) => i.removedAt === null)).toBe(true);
+
+    // Junto com a redução da quantidade, a mesma remoção passa.
+    await updateSale(supervisor, saleId, { expectedVersion: v, removeItemIds: [big.id], installmentCount: 50 });
+    expect((await schedule(saleId)).map((p) => p.amountCents)).toEqual(Array(50).fill(1));
+  });
+
+  it("Pix não tem parcelas: a regra não se aplica", async () => {
+    const saleId = await sale(org.ids.sellerA1, { method: "PIX", prices: [1] });
+    expect(await schedule(saleId)).toEqual([]);
+  });
+});
+
+describe(`teto técnico de parcelas (MAX_INSTALLMENTS = ${MAX_INSTALLMENTS})`, () => {
+  const overLimit = { fieldErrors: { installmentCount: [INSTALLMENTS_OVER_LIMIT] } };
+
+  it("criação: exatamente o teto é aceito; teto + 1 é recusado no campo, sem gravar nada", async () => {
+    const lead = await createLead(await ctx(org.ids.sellerA1), { name: "Cliente Teto", phone: nextPhone(), interestCourseId: course });
+    const input = (installmentCount: number) => ({
+      requestId: crypto.randomUUID(),
+      leadId: lead.id,
+      paymentMethod: "CARD" as const,
+      installmentCount,
+      items: [{ courseId: course, priceCents: 500_000 }],
+    });
+    const rejected = input(MAX_INSTALLMENTS + 1);
+    const error = await createSale(await ctx(org.ids.sellerA1), rejected).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toMatchObject(overLimit);
+    expect(await handle.db.select().from(sales).where(eq(sales.id, rejected.requestId))).toEqual([]);
+    expect(await allRows(rejected.requestId)).toEqual([]);
+
+    const { saleId } = await createSale(await ctx(org.ids.sellerA1), input(MAX_INSTALLMENTS));
+    expect(await schedule(saleId)).toHaveLength(MAX_INSTALLMENTS);
+  });
+
+  it("edição: mudar a quantidade para teto + 1 é recusado sem alterar nada; para o teto é aceito", async () => {
+    const saleId = await sale(org.ids.sellerA1, { prices: [500_000], count: 3 });
+    const supervisor = await ctx(org.ids.supA);
+    const before = await saleState(saleId);
+    const error = await updateSale(supervisor, saleId, { expectedVersion: before.version, installmentCount: MAX_INSTALLMENTS + 1 }).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toMatchObject(overLimit);
+    expect(await saleState(saleId)).toEqual(before);
+
+    await updateSale(supervisor, saleId, { expectedVersion: before.version, installmentCount: MAX_INSTALLMENTS });
+    expect(await schedule(saleId)).toHaveLength(MAX_INSTALLMENTS);
+  });
+
+  // Venda antiga acima do teto (o teto só vale quando a quantidade muda):
+  // tests/modules/installments-legacy-limit.test.ts, com o teto reduzido por
+  // vi.mock para não refazer cronogramas de mais de 1.000 parcelas.
 });
 
 describe("estorno e reativação", () => {

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { REPORT_ERROR_MESSAGES, REPORT_TOO_MANY_ROWS, reportErrorMessage } from "@/lib/reports";
 import type { ServiceContext } from "@/server/context";
 import type { DatabaseHandle } from "@/server/db/connect";
 import { createLead } from "@/server/modules/leads/leads.service";
@@ -61,15 +62,47 @@ describe("GET /relatorios/exportar", () => {
     expect(supervisor).not.toMatch(/Custo|Lucro/);
   });
 
-  it("erro de negócio volta para /relatorios com a mensagem (sem permissão, filtro inválido)", async () => {
+  it("erro de negócio volta para /relatorios só com um código conhecido, nunca com a mensagem", async () => {
+    const errorOf = (response: Response) => {
+      expect(response.status).toBe(303);
+      const location = new URL(response.headers.get("location")!);
+      expect(location.pathname).toBe("/relatorios");
+      expect([...location.searchParams.keys()]).toEqual(["erro"]);
+      return location.searchParams.get("erro");
+    };
+
     session.current = await org.ctx(org.ids.sellerA1);
-    const forbidden = await get("tipo=sales");
-    expect(forbidden.status).toBe(303);
-    expect(new URL(forbidden.headers.get("location")!).pathname).toBe("/relatorios");
+    expect(errorOf(await get("tipo=sales"))).toBe("permissao");
 
     session.current = await org.ctx(org.ids.admin);
-    const invalid = await get("tipo=sales&dateFrom=2026-08-01&dateTo=2026-07-01");
-    expect(invalid.status).toBe(303);
-    expect(new URL(invalid.headers.get("location")!).searchParams.get("erro")).toBe("A data inicial deve ser igual ou anterior à final.");
+    expect(errorOf(await get("tipo=sales&dateFrom=2026-08-01&dateTo=2026-07-01"))).toBe("periodo");
+    expect(errorOf(await get("tipo=performance&dateFrom=2026-08-01&dateTo=2026-07-01&view=sellers&criterion=count"))).toBe("periodo");
+    expect(errorOf(await get("tipo=inexistente"))).toBe("filtro");
+    expect(errorOf(await get("tipo=sales&dateFrom=31-07-2026"))).toBe("filtro");
+  });
+
+  it("data final inválida ou ausente é erro de filtro, não intervalo invertido", async () => {
+    const codeOf = async (query: string) => new URL((await get(query)).headers.get("location")!).searchParams.get("erro");
+    session.current = await org.ctx(org.ids.admin);
+    // Formato inválido em dateTo (o serviço aponta dateTo, mas não há intervalo invertido).
+    expect(await codeOf("tipo=sales&dateTo=31-07-2026")).toBe("filtro");
+    expect(await codeOf("tipo=sales&dateFrom=2026-08-01&dateTo=2026-02-30")).toBe("filtro");
+    // Desempenho exige as duas datas: dateTo ausente.
+    expect(await codeOf("tipo=performance&dateFrom=2026-07-01&view=sellers&criterion=count")).toBe("filtro");
+    // Intervalo realmente invertido, inclusive no Desempenho (Ranking).
+    expect(await codeOf("tipo=certificates&dateFrom=2026-08-01&dateTo=2026-07-31")).toBe("periodo");
+    expect(await codeOf("tipo=performance&dateFrom=2026-08-01&dateTo=2026-07-31&view=teams&criterion=revenue")).toBe("periodo");
+    // Intervalo válido segue gerando o arquivo.
+    expect((await get("tipo=sales&dateFrom=2026-07-01&dateTo=2026-07-31")).status).toBe(200);
+  });
+});
+
+describe("mensagens de erro da tela de relatórios", () => {
+  it("cada código tem mensagem fixa; código desconhecido ou texto livre na URL → mensagem genérica", () => {
+    expect(reportErrorMessage("permissao")).toBe(REPORT_ERROR_MESSAGES.permissao);
+    expect(reportErrorMessage("limite")).toBe(REPORT_TOO_MANY_ROWS);
+    expect(reportErrorMessage("")).toBe(REPORT_ERROR_MESSAGES.falha);
+    expect(reportErrorMessage("Sua conta foi bloqueada. Ligue para 0800...")).toBe(REPORT_ERROR_MESSAGES.falha);
+    expect(reportErrorMessage("toString")).toBe(REPORT_ERROR_MESSAGES.falha);
   });
 });

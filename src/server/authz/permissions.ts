@@ -50,9 +50,9 @@ const MATRIX = {
   "sales:create": ["ADMIN", "SUPERVISOR", "SELLER"],
   /** Informar/alterar a data da venda (os demais registram com a data de hoje no fuso do negócio). */
   "sales:setDate": ["ADMIN"],
-  /** Editar venda no escopo: incluir/remover cursos (itens). */
+  /** Editar venda no escopo: incluir cursos (itens) com preço. */
   "sales:edit": ["ADMIN", "SUPERVISOR", "SELLER"],
-  /** Alterar valor total, forma de pagamento e parcelas. */
+  /** Remover cursos, corrigir preços, forma de pagamento e parcelas (o total é sempre a soma dos itens). */
   "sales:editFinancial": ["ADMIN", "SUPERVISOR"],
   /** Trocar o vendedor responsável (o lead acompanha se a venda for válida). */
   "sales:changeSeller": ["ADMIN", "SUPERVISOR"],

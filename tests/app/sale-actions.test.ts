@@ -4,6 +4,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ServiceContext } from "@/server/context";
 import type { DatabaseHandle } from "@/server/db/connect";
 import { leadEvents, leads, saleItems, sales, teams } from "@/server/db/schema";
+import { MAX_INSTALLMENTS } from "@/lib/installments";
+import { INSTALLMENTS_EXCEED_TOTAL, INSTALLMENTS_OVER_LIMIT } from "@/server/modules/installments/installments.service";
 import { createLead, getLeadTimeline, REVERSAL_NEEDS_VALID_OWNER } from "@/server/modules/leads/leads.service";
 import {
   createSale,
@@ -123,6 +125,9 @@ describe("registro pela action", () => {
     expect(pix).toMatchObject({ status: "error", fieldErrors: { installmentCount: ["Pix é à vista: não informe parcelas."] } });
     const broken = await actions.createSaleAction(IDLE, form(createForm(leadId, { paymentMethod: "CARD", installmentCount: "2,5" })));
     expect(broken).toMatchObject({ status: "error", fieldErrors: { installmentCount: ["Quantidade de parcelas inválida."] } });
+    // R$ 1,00 em 101 parcelas: alguma ficaria com R$ 0,00 → erro no campo, não erro genérico do banco.
+    const tooMany = await actions.createSaleAction(IDLE, form(createForm(leadId, { paymentMethod: "CARD", itemPrice: ["1,00"], installmentCount: "101" })));
+    expect(tooMany).toMatchObject({ status: "error", fieldErrors: { installmentCount: [INSTALLMENTS_EXCEED_TOTAL] } });
     expect(await salesOf(leadId)).toBe(0);
 
     const card = createForm(leadId, { paymentMethod: "CARD", installmentCount: "6" });
@@ -289,6 +294,21 @@ describe("edição pela action", () => {
     const back = await getSale(await ctx(org.ids.supA), saleId);
     const toPix = await actions.updateSaleAction(IDLE, form({ saleId, expectedVersion: String(back.version), paymentMethod: "PIX", installmentCount: "" }));
     expect(toPix).toMatchObject({ status: "success" });
+    expect(await saleRow(saleId)).toMatchObject({ paymentMethod: "PIX", installmentCount: null });
+  });
+
+  it(`parcelas acima do teto técnico (${MAX_INSTALLMENTS}) voltam no campo, no registro e na edição`, async () => {
+    await as(org.ids.sellerA1);
+    const leadId = await newLead(org.ids.sellerA1);
+    const over = String(MAX_INSTALLMENTS + 1);
+    const created = await actions.createSaleAction(IDLE, form(createForm(leadId, { paymentMethod: "CARD", itemPrice: ["50.000,00"], installmentCount: over })));
+    expect(created).toMatchObject({ status: "error", fieldErrors: { installmentCount: [INSTALLMENTS_OVER_LIMIT] } });
+    expect(await salesOf(leadId)).toBe(0);
+
+    const { saleId, version } = await saleOfA1();
+    await as(org.ids.supA);
+    const edited = await actions.updateSaleAction(IDLE, form({ saleId, expectedVersion: String(version), paymentMethod: "CARD", installmentCount: over }));
+    expect(edited).toMatchObject({ status: "error", fieldErrors: { installmentCount: [INSTALLMENTS_OVER_LIMIT] } });
     expect(await saleRow(saleId)).toMatchObject({ paymentMethod: "PIX", installmentCount: null });
   });
 

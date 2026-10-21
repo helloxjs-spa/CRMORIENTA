@@ -16,7 +16,7 @@ import { actionTarget } from "../leads/leads-results";
 import { LeadsToolbar, type ToolbarOptions } from "../leads/leads-toolbar";
 import { NegotiationBanner } from "../leads/negotiation-banner";
 import { leadActionsFor, moveTargetsFor } from "../leads/policy";
-import { leadsHref, parseLeadsParams, type LeadsParams } from "../leads/search-params";
+import { boardParams, leadsHref, parseLeadsParams, type LeadsParams } from "../leads/search-params";
 import { KanbanBoard, type KanbanCard, type KanbanColumn } from "./kanban-board";
 
 export const metadata: Metadata = { title: "Kanban" };
@@ -37,7 +37,7 @@ export default async function KanbanPage({ searchParams }: PageProps<"/kanban">)
   const canSell = hasPermission(actor, "sales:create");
 
   const raw = parseLeadsParams(await searchParams);
-  const params: LeadsParams = { ...raw, view: "carteira", stage: undefined, page: 1, ...(canManage ? {} : { seller: undefined, team: undefined }) };
+  const params: LeadsParams = boardParams(raw, canManage);
 
   const [courses, sellers, teams, block, ...pages] = await Promise.all([
     listCourseFilterOptions(ctx),

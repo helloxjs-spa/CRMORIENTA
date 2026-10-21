@@ -1,9 +1,11 @@
 import { and, desc, eq, lt, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
+import { z } from "zod";
 import { assertPermission } from "@/server/authz/permissions";
 import type { ServiceContext } from "@/server/context";
 import { auditEvents, users } from "@/server/db/schema";
 import type { Database } from "@/server/db/types";
+import { parseInput } from "@/server/validation";
 
 export const AUDIT_ACTIONS = {
   "auth.login": "Login",
@@ -31,10 +33,12 @@ export const AUDIT_ACTIONS = {
 
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
 
+export const AUDIT_ENTITY_TYPES = ["user", "team", "session", "course", "certificate", "installment"] as const;
+
 export type AuditInput = {
   actorId: string | null;
   action: AuditAction;
-  entityType: "user" | "team" | "session" | "course" | "certificate" | "installment";
+  entityType: (typeof AUDIT_ENTITY_TYPES)[number];
   entityId?: string | null;
   teamId?: string | null;
   metadata?: Record<string, unknown>;
@@ -54,11 +58,16 @@ export async function recordAudit(db: Database, input: AuditInput): Promise<void
 
 export const AUDIT_PAGE_SIZE = 50;
 
-export async function listAuditEvents(
-  { db, actor }: ServiceContext,
-  filters: { entityType?: string; entityId?: string; beforeId?: number } = {},
-) {
+const listFiltersSchema = z.strictObject({
+  entityType: z.enum(AUDIT_ENTITY_TYPES).optional(),
+  entityId: z.string().trim().min(1).max(200).optional(),
+  /** Paginação: eventos com id menor que este (inteiro positivo, dentro do intervalo seguro). */
+  beforeId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+});
+
+export async function listAuditEvents({ db, actor }: ServiceContext, rawFilters: unknown = {}) {
   assertPermission(actor, "audit:view");
+  const filters = parseInput(listFiltersSchema, rawFilters);
   const conditions: SQL[] = [];
   if (filters.entityType) conditions.push(eq(auditEvents.entityType, filters.entityType));
   if (filters.entityId) conditions.push(eq(auditEvents.entityId, filters.entityId));

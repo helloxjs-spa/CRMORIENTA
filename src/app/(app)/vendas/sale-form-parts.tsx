@@ -4,6 +4,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/form";
+import { MAX_INSTALLMENTS } from "@/lib/installments";
 import { courseLabel } from "@/lib/leads";
 import { centsToInput, formatBRL, parseBRLToCents } from "@/lib/money";
 import { PAYMENT_METHOD_LABELS } from "@/lib/sales";
@@ -132,6 +133,7 @@ export function PaymentFields({
   errors,
   idPrefix,
   sendEmptyInstallments = false,
+  maxInstallments = MAX_INSTALLMENTS,
 }: {
   method: PaymentMethod | "";
   onMethodChange: (method: PaymentMethod) => void;
@@ -141,6 +143,8 @@ export function PaymentFields({
   idPrefix: string;
   /** Edição: ao trocar para Pix, envia parcelas vazias (= remover as parcelas do cartão). */
   sendEmptyInstallments?: boolean;
+  /** Só conveniência (o servidor valida). Na edição, não menor que a quantidade atual. */
+  maxInstallments?: number;
 }) {
   return (
     <div className="grid gap-3 sm:grid-cols-2">
@@ -179,6 +183,7 @@ export function PaymentFields({
             type="number"
             inputMode="numeric"
             min={1}
+            max={maxInstallments}
             step={1}
             required
             value={installments}
