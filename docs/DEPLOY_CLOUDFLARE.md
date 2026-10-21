@@ -3,7 +3,7 @@
 O CRM roda como **um Cloudflare Worker** gerado pelo adaptador oficial [OpenNext](https://opennext.js.org/cloudflare) a partir do build do Next.js. O banco continua sendo o **PostgreSQL do Supabase**, acessado pelo **Hyperdrive** (pool de conexões da Cloudflare).
 
 ```
-Navegador ──► Worker "crm-polo-educacional" (Next.js via OpenNext)
+Navegador ──► Worker "crmalan" (Next.js via OpenNext)
                  │  binding HYPERDRIVE
                  ▼
               Hyperdrive (pool, cache DESLIGADO) ──► Supabase (Session pooler, 5432)
@@ -19,7 +19,7 @@ Navegador ──► Worker "crm-polo-educacional" (Next.js via OpenNext)
 
 ## 2. Variáveis e secrets
 
-### No Worker (Cloudflare › Workers › crm-polo-educacional › Settings)
+### No Worker (Cloudflare › Workers › crmalan › Settings)
 
 | Nome | Tipo | Valor | Onde fica |
 |---|---|---|---|
