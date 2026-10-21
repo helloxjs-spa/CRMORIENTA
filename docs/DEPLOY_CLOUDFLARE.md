@@ -57,10 +57,12 @@ Cloudflare › Workers & Pages › Create › Import a repository, e configure:
 | Campo | Valor |
 |---|---|
 | Build command | `npx opennextjs-cloudflare build` |
-| Deploy command | `npx opennextjs-cloudflare deploy` |
+| Deploy command | `npx wrangler deploy` |
 | Root directory | `/` |
 
 A cada push na branch configurada, a Cloudflare compila em Linux e publica.
+
+> **Não use `npx opennextjs-cloudflare deploy` no Workers Builds.** Ele monta um proxy local dos bindings antes de publicar e, sem Postgres local, falha com `When developing locally, you should use a local Postgres connection string to emulate Hyperdrive` (`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE`). Esse passo só serve para popular o cache incremental, que este projeto não usa (`open-next.config.ts`); `wrangler deploy` publica o mesmo `.open-next/worker.js`.
 
 ### Opção B — Linha de comando (Linux/macOS/WSL)
 
