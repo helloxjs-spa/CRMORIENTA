@@ -62,7 +62,7 @@ Cloudflare › Workers & Pages › Create › Import a repository, e configure:
 
 A cada push na branch configurada, a Cloudflare compila em Linux e publica.
 
-> **Não use `npx opennextjs-cloudflare deploy` no Workers Builds.** Ele monta um proxy local dos bindings antes de publicar e, sem Postgres local, falha com `When developing locally, you should use a local Postgres connection string to emulate Hyperdrive` (`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE`). Esse passo só serve para popular o cache incremental, que este projeto não usa (`open-next.config.ts`); `wrangler deploy` publica o mesmo `.open-next/worker.js`.
+> **Hyperdrive no deploy.** `wrangler deploy` detecta o projeto OpenNext e chama `opennextjs-cloudflare deploy`, que monta um proxy local dos bindings antes de publicar. Sem um endereço local para o Hyperdrive, falha com `When developing locally, you should use a local Postgres connection string to emulate Hyperdrive`. Por isso o `wrangler.jsonc` tem um `localConnectionString` **fictício** (sem senha, nunca usado em produção nem conectado no deploy). Não remova.
 
 ### Opção B — Linha de comando (Linux/macOS/WSL)
 

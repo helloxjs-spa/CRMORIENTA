@@ -21,11 +21,16 @@
   // 1) npx wrangler hyperdrive create crm-polo-db --connection-string="<Session pooler do Supabase>" --caching-disabled
   // 2) cole o id retornado abaixo.
   // Preview local (`npm run cf:preview`): defina no terminal
-  // CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE com um Postgres LOCAL.
+  // CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE com um Postgres LOCAL
+  // (a variável tem precedência sobre o localConnectionString abaixo).
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
-      "id": "1cc3533fcaac49dc9e6a233e7e9e045d"
+      "id": "1cc3533fcaac49dc9e6a233e7e9e045d",
+      // Endereço local FICTÍCIO, sem senha: `opennextjs-cloudflare deploy` (também
+      // chamado por `wrangler deploy`) monta um proxy local dos bindings e falha sem
+      // ele no Workers Builds. Não é usado em produção nem é conectado no deploy.
+      "localConnectionString": "postgresql://postgres@127.0.0.1:5432/crm_local"
     }
   ]
 }
