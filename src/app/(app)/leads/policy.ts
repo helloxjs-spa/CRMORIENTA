@@ -31,11 +31,17 @@ function isOverdueNegotiation(lead: LeadState, now: Date): boolean {
   return lead.status === "ACTIVE" && lead.stage === "NEGOTIATION" && lead.stageDueAt !== null && lead.stageDueAt < now;
 }
 
-/** Destinos que o vendedor pode escolher agora (vazio se não pode movimentar). */
+/**
+ * Destinos que o ator pode escolher agora (vazio se não pode movimentar).
+ * SUPERVISOR/ADMIN só recebem leads do próprio escopo, então qualquer lead
+ * listado é movimentável; o SELLER, só os da carteira dele.
+ */
 export function moveTargetsFor(lead: LeadState, actor: Pick<Actor, "role" | "userId">, situation: SellerSituation, now = new Date()): LeadStage[] {
-  if (!hasPermission(actor, "leads:move") || lead.ownerId !== actor.userId || lead.status !== "ACTIVE") return [];
-  if (lead.queueReason === "FOLLOW_UP_3_EXPIRED") return [];
-  if (situation.negotiationBlocked && !isOverdueNegotiation(lead, now)) return [];
+  if (!hasPermission(actor, "leads:move") || lead.status !== "ACTIVE") return [];
+  if (actor.role === "SELLER") {
+    if (lead.ownerId !== actor.userId || lead.queueReason === "FOLLOW_UP_3_EXPIRED") return [];
+    if (situation.negotiationBlocked && !isOverdueNegotiation(lead, now)) return [];
+  }
   return [...STAGE_TRANSITIONS[lead.stage]];
 }
 
@@ -51,7 +57,8 @@ export function leadActionsFor(
   const sellerReadOnly = actor.role === "SELLER" && lead.queueReason === "FOLLOW_UP_3_EXPIRED";
 
   if (active && !sellerReadOnly && hasPermission(actor, "leads:edit")) actions.push("edit");
-  if (operating && !sellerReadOnly && hasPermission(actor, "leads:addNote") && lead.ownerId === actor.userId) actions.push("note");
+  const ownsOrManages = actor.role !== "SELLER" || lead.ownerId === actor.userId;
+  if (operating && !sellerReadOnly && hasPermission(actor, "leads:addNote") && ownsOrManages) actions.push("note");
   if (moveTargetsFor(lead, actor, situation).length > 0) actions.push("move");
 
   if (operating && hasPermission(actor, "leads:transfer")) {

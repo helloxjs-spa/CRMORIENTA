@@ -6,7 +6,7 @@ import { useToast } from "@/components/ui/toast";
 import { fieldErrorsOf, IDLE, type ActionState } from "@/lib/action-state";
 import { addLeadNoteAction } from "./actions";
 
-/** Atualização do vendedor responsável (append-only; em Negociação renova o prazo). */
+/** Observação no lead (append-only; a do vendedor em Negociação renova o prazo). */
 export function NoteForm({ leadId, renewsNegotiation }: { leadId: string; renewsNegotiation: boolean }) {
   const [state, formAction] = useActionState<ActionState, FormData>(addLeadNoteAction, IDLE);
   const formRef = useRef<HTMLFormElement>(null);
@@ -25,7 +25,7 @@ export function NoteForm({ leadId, renewsNegotiation }: { leadId: string; renews
       <input type="hidden" name="leadId" value={leadId} />
       <FormAlert message={state.status === "error" && !errors ? state.message : undefined} />
       <label htmlFor={`note-${leadId}`} className="sr-only">
-        Adicionar atualização
+        Adicionar observação
       </label>
       <Textarea
         id={`note-${leadId}`}
@@ -33,7 +33,7 @@ export function NoteForm({ leadId, renewsNegotiation }: { leadId: string; renews
         required
         maxLength={5000}
         rows={3}
-        placeholder="Adicionar atualização..."
+        placeholder="Escreva uma observação..."
         aria-invalid={errors?.length ? true : undefined}
       />
       {errors?.map((error) => (
@@ -44,10 +44,10 @@ export function NoteForm({ leadId, renewsNegotiation }: { leadId: string; renews
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-slate-500">
           {renewsNegotiation
-            ? "Em negociação: salvar uma atualização renova o prazo da negociação por mais 24 horas."
-            : "As atualizações ficam no histórico e não podem ser editadas nem apagadas."}
+            ? "Em negociação: salvar uma observação renova o prazo da negociação por mais 24 horas."
+            : "As observações ficam no histórico e não podem ser editadas nem apagadas."}
         </p>
-        <SubmitButton size="sm">Salvar atualização</SubmitButton>
+        <SubmitButton size="sm">Salvar observação</SubmitButton>
       </div>
     </form>
   );

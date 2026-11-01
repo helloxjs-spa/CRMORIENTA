@@ -92,7 +92,7 @@ describe("timeline: texto vem só do evento gravado", () => {
       NOW,
     );
     expect(text).toEqual({
-      title: "Atualização registrada",
+      title: "Observação registrada",
       quote: "Cliente pediu para retornar depois das 16h.",
       lines: ["Prazo da negociação renovado até amanhã 12:00"],
     });
@@ -204,29 +204,35 @@ describe("ações oferecidas pela interface (o backend revalida tudo)", () => {
   const past = new Date(Date.now() - 3_600_000);
   const lead = { status: "ACTIVE" as const, stage: "FOLLOW_UP_1" as const, ownerId: "a1", queueReason: null, stageDueAt: future };
 
-  it("vendedor responsável: editar, registrar atualização e mover para os destinos do mapa", () => {
+  const allButFu1 = ["NEW", "NO_ANSWER", "FOLLOW_UP_2", "FOLLOW_UP_3", "NEGOTIATION", "REWORK"];
+
+  it("vendedor responsável: editar, registrar atualização e mover para qualquer etapa (menos Fechamento)", () => {
     expect(leadActionsFor(lead, seller, free)).toEqual(["edit", "note", "move"]);
-    expect(moveTargetsFor(lead, seller, free)).toEqual(["FOLLOW_UP_2", "NEGOTIATION"]);
+    expect(moveTargetsFor(lead, seller, free)).toEqual(allButFu1);
     expect(moveTargetsFor({ ...lead, ownerId: "a2" }, seller, free)).toEqual([]);
-    expect(moveTargetsFor(lead, supervisor, free)).toEqual([]);
+  });
+
+  it("supervisor/admin: movem qualquer lead do escopo, inclusive de outro vendedor", () => {
+    expect(moveTargetsFor(lead, supervisor, free)).toEqual(allButFu1);
+    expect(leadActionsFor(lead, supervisor, free)).toEqual(["edit", "note", "move", "transfer", "trash"]);
   });
 
   it("Follow-up 3 vencido: somente leitura para o vendedor; supervisor redistribui ou envia para a Lixeira", () => {
     const expired = { ...lead, stage: "FOLLOW_UP_3" as const, queueReason: "FOLLOW_UP_3_EXPIRED" as const, stageDueAt: past };
     expect(leadActionsFor(expired, seller, free)).toEqual([]);
     expect(moveTargetsFor(expired, seller, free)).toEqual([]);
-    expect(leadActionsFor(expired, supervisor)).toEqual(["edit", "redistribute", "trash"]);
+    expect(leadActionsFor(expired, supervisor)).toEqual(["edit", "note", "move", "redistribute", "trash"]);
   });
 
   it("negociação vencida: só a própria negociação continua movimentável", () => {
     expect(moveTargetsFor(lead, seller, blocked)).toEqual([]);
     const overdue = { ...lead, stage: "NEGOTIATION" as const, stageDueAt: past };
-    expect(moveTargetsFor(overdue, seller, blocked)).toEqual(["FOLLOW_UP_1"]);
+    expect(moveTargetsFor(overdue, seller, blocked)).toEqual(["NEW", "NO_ANSWER", "FOLLOW_UP_1", "FOLLOW_UP_2", "FOLLOW_UP_3", "REWORK"]);
     expect(leadActionsFor(lead, seller, blocked)).toEqual(["edit", "note"]);
   });
 
   it("sem responsável: transferir ou Lixeira (não é Retrabalho)", () => {
-    expect(leadActionsFor({ ...lead, ownerId: null, queueReason: "UNASSIGNED" }, supervisor)).toEqual(["edit", "transfer", "trash"]);
+    expect(leadActionsFor({ ...lead, ownerId: null, queueReason: "UNASSIGNED" }, supervisor)).toEqual(["edit", "note", "move", "transfer", "trash"]);
   });
 
   it("Lixeira: só recuperar; Fechamento: nem transferir, nem Lixeira, nem mover", () => {
@@ -234,6 +240,8 @@ describe("ações oferecidas pela interface (o backend revalida tudo)", () => {
     expect(leadActionsFor({ ...lead, status: "TRASHED" }, seller)).toEqual([]);
     expect(leadActionsFor({ ...lead, stage: "CLOSED" }, supervisor)).toEqual(["edit"]);
     expect(moveTargetsFor({ ...lead, stage: "CLOSED" }, seller, free)).toEqual([]);
+    expect(moveTargetsFor({ ...lead, stage: "CLOSED" }, supervisor, free)).toEqual([]);
+    expect(moveTargetsFor({ ...lead, status: "TRASHED" }, supervisor, free)).toEqual([]);
   });
 });
 

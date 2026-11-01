@@ -292,11 +292,26 @@ describe("observações", () => {
     expect(timeline[1]).toMatchObject({ actorName: "Vendedor A1", note: "Pediu informações sobre a bolsa.", cycleNumber: 1, stage: "NEW" });
   });
 
-  it("supervisor e admin não registram observação; texto vazio é recusado", async () => {
+  it("supervisor (da equipe) e admin registram observação; fora do escopo é 404; texto vazio é recusado", async () => {
     const lead = await newLead(org.ids.sellerA1);
-    await expect(addLeadNote(await org.ctx(org.ids.supA), lead.id, { body: "x" })).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(addLeadNote(await org.ctx(org.ids.admin), lead.id, { body: "x" })).rejects.toBeInstanceOf(ForbiddenError);
+    await addLeadNote(await org.ctx(org.ids.supA), lead.id, { body: "Ligar à tarde." });
+    await addLeadNote(await org.ctx(org.ids.admin), lead.id, { body: "Prioridade." });
+    await expect(addLeadNote(await org.ctx(org.ids.supB), lead.id, { body: "x" })).rejects.toBeInstanceOf(NotFoundError);
     await expect(addLeadNote(await org.ctx(org.ids.sellerA1), lead.id, { body: "   " })).rejects.toBeInstanceOf(ValidationError);
+
+    const timeline = await getLeadTimeline(await org.ctx(org.ids.sellerA1), lead.id);
+    expect(timeline.filter((e) => e.type === "NOTE_ADDED").map((e) => e.note)).toEqual(["Ligar à tarde.", "Prioridade."]);
+  });
+
+  it("em Negociação, observação de supervisor/admin não renova o prazo do vendedor", async () => {
+    const lead = await newLead(org.ids.sellerA1);
+    await setLeadStage(handle, lead.id, "NEGOTIATION", -2);
+    const before = (await rowOf(lead.id)).stageDueAt;
+    await addLeadNote(await org.ctx(org.ids.admin), lead.id, { body: "Cobrar o vendedor." });
+    expect((await rowOf(lead.id)).stageDueAt).toEqual(before);
+    // O próprio vendedor atualiza: renova o prazo e libera o bloqueio para os próximos testes.
+    await addLeadNote(await org.ctx(org.ids.sellerA1), lead.id, { body: "Cliente respondeu." });
+    expect((await rowOf(lead.id)).stageDueAt!.getTime()).toBeGreaterThan(Date.now());
   });
 
   it("em Negociação, uma observação renova o prazo por 24 horas", async () => {

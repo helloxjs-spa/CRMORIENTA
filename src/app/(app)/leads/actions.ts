@@ -54,7 +54,7 @@ export async function addLeadNoteAction(_prev: ActionState, formData: FormData):
   return runAction(async (ctx) => {
     await addLeadNote(ctx, text(formData, "leadId"), { body: text(formData, "body") });
     revalidateLeadViews();
-    return "Atualização registrada.";
+    return "Observação registrada.";
   });
 }
 

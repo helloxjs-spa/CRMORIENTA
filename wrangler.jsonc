@@ -23,6 +23,15 @@
   // Preview local (`npm run cf:preview`): defina no terminal
   // CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE com um Postgres LOCAL
   // (a variável tem precedência sobre o localConnectionString abaixo).
+  // Comprovantes de pagamento das vendas: bucket R2 PRIVADO (sem acesso público).
+  // Os arquivos só são entregues pela rota /vendas/<id>/comprovantes/<anexo>,
+  // que confere sessão, permissão e escopo da venda.
+  "r2_buckets": [
+    {
+      "binding": "RECEIPTS",
+      "bucket_name": "crm-comprovantes"
+    }
+  ],
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",

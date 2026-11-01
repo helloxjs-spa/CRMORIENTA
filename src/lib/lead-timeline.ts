@@ -72,7 +72,7 @@ export function describeLeadEvent(event: LeadTimelineEntry, now: Date = new Date
     case "NOTE_ADDED": {
       const renewed = typeof event.metadata.renewedDueAt === "string" ? event.metadata.renewedDueAt : null;
       return {
-        title: "Atualização registrada",
+        title: "Observação registrada",
         quote: event.note ?? undefined,
         lines: renewed ? [`Prazo da negociação renovado até ${formatRelativeDateTime(renewed, now)}`] : [],
       };

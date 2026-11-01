@@ -2,7 +2,7 @@
 
 import type { LucideIcon } from "lucide-react";
 import { MoreHorizontal } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/cn";
 
@@ -15,9 +15,22 @@ const VIEWPORT_MARGIN = 8;
  * Menu de ações contextual (botão "⋯"). Fecha ao clicar fora, com Esc, ao rolar
  * ou redimensionar. O menu é renderizado num portal com posição fixa, para não
  * ser cortado por contêineres com overflow (tabelas, colunas do Kanban); abre
- * para cima quando não cabe abaixo do botão.
+ * para cima quando não cabe abaixo do botão. `trigger` troca o "⋯" por um
+ * botão com texto (ex.: "Mover"), estilizado por `triggerClassName`.
  */
-export function DropdownMenu({ items, label = "Ações", className }: { items: MenuItem[]; label?: string; className?: string }) {
+export function DropdownMenu({
+  items,
+  label = "Ações",
+  className,
+  trigger,
+  triggerClassName,
+}: {
+  items: MenuItem[];
+  label?: string;
+  className?: string;
+  trigger?: ReactNode;
+  triggerClassName?: string;
+}) {
   const [open, setOpen] = useState(false);
   const [style, setStyle] = useState<CSSProperties>({ visibility: "hidden" });
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -71,10 +84,14 @@ export function DropdownMenu({ items, label = "Ações", className }: { items: M
         onClick={toggle}
         aria-expanded={open}
         aria-haspopup="menu"
-        aria-label={label}
-        className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-2 focus-visible:outline-brand-600"
+        aria-label={trigger ? undefined : label}
+        className={
+          trigger
+            ? triggerClassName
+            : "rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-2 focus-visible:outline-brand-600"
+        }
       >
-        <MoreHorizontal className="size-4" aria-hidden />
+        {trigger ?? <MoreHorizontal className="size-4" aria-hidden />}
       </button>
       {open &&
         createPortal(

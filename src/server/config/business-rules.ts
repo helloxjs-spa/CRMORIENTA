@@ -18,4 +18,12 @@ export const BUSINESS_RULES = {
   followUpDeadlineHours: 24,
   /** Prazo da negociação: 24 horas corridas desde a última atualização válida (§8). */
   negotiationDeadlineHours: 24,
+  /**
+   * Comprovantes de pagamento da venda (decisão do usuário em 31/10/2026):
+   * opcionais, vários por venda, imagem ou PDF. O 007 tem um teto rígido de
+   * 5 MB por arquivo; este limite não pode passar dele.
+   */
+  saleAttachmentMaxBytes: 5 * 1024 * 1024,
+  /** Máximo de comprovantes ativos (não removidos) por venda. */
+  saleAttachmentMaxPerSale: 20,
 } as const;

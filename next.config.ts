@@ -22,6 +22,11 @@ const nextConfig: NextConfig = {
   // pela condição "workerd"; o rastreamento do Next copiaria apenas o stub vazio.
   outputFileTracingIncludes: cloudflareBuild ? { "/**": ["./node_modules/pg-cloudflare/**/*"] } : {},
   poweredByHeader: false,
+  // Comprovantes de pagamento: a tela envia um arquivo por chamada (até 5 MB,
+  // BUSINESS_RULES.saleAttachmentMaxBytes) + a sobra do multipart.
+  experimental: {
+    serverActions: { bodySizeLimit: "6mb" },
+  },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

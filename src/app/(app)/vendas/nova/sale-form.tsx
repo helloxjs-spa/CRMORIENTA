@@ -2,7 +2,7 @@
 
 import { RotateCcw } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useActionState, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useActionState, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Button, ButtonLink } from "@/components/ui/button";
 import { Field, FormAlert, Input, Select, SubmitButton } from "@/components/ui/form";
 import { useToast } from "@/components/ui/toast";
@@ -21,6 +21,7 @@ import { previewTotalCents, REQUEST_ID_REUSED, SALE_CREATE_UNCERTAIN } from "@/l
 import { settleAction } from "@/lib/settle-action";
 import type { PaymentMethod } from "@/server/db/schema";
 import { createSaleAction } from "../actions";
+import { ReceiptPicker, useUploadReceipts } from "../receipts";
 import { CourseRows, OtherErrors, PaymentFields, TotalPreview, type CourseChoice, type CourseRow, type SellerChoice } from "../sale-form-parts";
 
 const INLINE_ERRORS = /^(sellerId|saleDate|paymentMethod|installmentCount|items\.\d+\.(courseId|priceCents))$/;
@@ -88,6 +89,11 @@ function DraftedSaleForm(props: SaleFormProps & { fresh: boolean; onStartNew: ()
   // O rascunho está guardado nesta aba? (falso: armazenamento indisponível)
   const [saved, setSaved] = useState(boot.saved);
   const [confirmingNew, setConfirmingNew] = useState(false);
+  // Comprovantes (opcionais): não entram no rascunho nem no envio da venda;
+  // são anexados à venda criada logo depois do sucesso, um por chamada.
+  const [receipts, setReceipts] = useState<File[]>([]);
+  const uploadReceipts = useUploadReceipts();
+  const handledSuccess = useRef<number | null>(null);
 
   const draftOf = (wasSubmitted: boolean): SaleDraft => ({
     version: 1,
@@ -127,10 +133,24 @@ function DraftedSaleForm(props: SaleFormProps & { fresh: boolean; onStartNew: ()
   }, [serialized, done]);
 
   useEffect(() => {
-    if (state.status !== "success") return;
+    if (state.status !== "success" || handledSuccess.current === state.at) return;
+    handledSuccess.current = state.at;
+    const finish = () => router.push(state.redirectTo ?? "/vendas");
     toast(state.message);
-    router.push(state.redirectTo ?? "/vendas");
-  }, [state, toast, router]);
+    if (receipts.length === 0) return finish();
+    // Venda fora do acesso de quem registrou (atribuída a um colega): não há como anexar.
+    if (!state.id) {
+      toast("Os comprovantes não foram anexados: a venda não está no seu acesso.", "error");
+      return finish();
+    }
+    void uploadReceipts(state.id, receipts).then((failed) => {
+      const sent = receipts.length - failed.length;
+      if (sent > 0) toast(sent === 1 ? "Comprovante anexado." : `${sent} comprovantes anexados.`);
+      for (const message of failed) toast(message, "error");
+      if (failed.length > 0) toast("Anexe os comprovantes que faltaram na tela da venda.", "error");
+      finish();
+    });
+  }, [state, toast, router, receipts, uploadReceipts]);
 
   const startNew = () => {
     const storage = sessionDraftStorage();
@@ -239,7 +259,15 @@ function DraftedSaleForm(props: SaleFormProps & { fresh: boolean; onStartNew: ()
         )}
       </div>
 
-      <div className="flex justify-end">
+      <section aria-labelledby="sale-receipts" className="space-y-2">
+        <h2 id="sale-receipts" className="text-sm font-semibold text-slate-900">
+          Comprovante de pagamento <span className="font-normal text-slate-500">(opcional)</span>
+        </h2>
+        <ReceiptPicker files={receipts} onChange={setReceipts} disabled={pending || done} />
+      </section>
+
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        {done && receipts.length > 0 && <span className="text-sm text-slate-500">Enviando comprovantes…</span>}
         <SubmitButton pending={pending || done}>Registrar venda</SubmitButton>
       </div>
     </form>

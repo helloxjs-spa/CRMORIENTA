@@ -29,11 +29,14 @@ export const AUDIT_ACTIONS = {
   "course.deactivated": "Curso desativado",
   "certificate.created": "Certificado registrado",
   "installment.paid": "Parcela marcada como paga",
+  "sale_attachment.created": "Comprovante de pagamento anexado",
+  "sale_attachment.removed": "Comprovante de pagamento removido",
+  "goal.set": "Meta mensal definida ou alterada",
 } as const;
 
 export type AuditAction = keyof typeof AUDIT_ACTIONS;
 
-export const AUDIT_ENTITY_TYPES = ["user", "team", "session", "course", "certificate", "installment"] as const;
+export const AUDIT_ENTITY_TYPES = ["user", "team", "session", "course", "certificate", "installment", "sale_attachment", "sales_goal"] as const;
 
 export type AuditInput = {
   actorId: string | null;

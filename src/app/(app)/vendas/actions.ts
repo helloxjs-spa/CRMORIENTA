@@ -5,8 +5,10 @@ import type { ActionState } from "@/lib/action-state";
 import { parseBRLToCents } from "@/lib/money";
 import type { ServiceContext } from "@/server/context";
 import { NotFoundError } from "@/server/errors";
+import { addSaleAttachments, removeSaleAttachment } from "@/server/modules/sales/attachments.service";
 import { createSale, getSale, reactivateSale, reverseSale, updateSale } from "@/server/modules/sales/sales.service";
 import { runAction, text } from "@/server/next/action";
+import { getFileStorage } from "@/server/storage/file-storage";
 
 // Actions finas: leem campos explícitos do FormData e delegam ao serviço, que
 // aplica RBAC, escopo (404 fora dele), validação, versão e auditoria. O total
@@ -78,6 +80,7 @@ export async function createSaleAction(_prev: ActionState, formData: FormData): 
     return {
       message: replayed ? "Esta venda já tinha sido registrada. Nada foi gravado de novo." : "Venda registrada.",
       redirectTo: `/vendas/${saleId}`,
+      id: saleId,
     };
   });
 }
@@ -136,5 +139,28 @@ export async function reactivateSaleAction(_prev: ActionState, formData: FormDat
     });
     revalidateSaleViews();
     return "Venda reativada. O lead está em Fechamento com o responsável da venda.";
+  });
+}
+
+/**
+ * Comprovantes de pagamento: os arquivos do campo "receipts" (só eles) vão
+ * para o serviço, que confere tipo pelo conteúdo, tamanho, escopo e audita.
+ * A tela envia um arquivo por chamada (limite do corpo em next.config.ts).
+ */
+export async function addSaleAttachmentsAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return runAction(async (ctx) => {
+    const uploads = formData.getAll("receipts").filter((value): value is File => value instanceof File && value.size > 0);
+    const files = await Promise.all(uploads.map(async (file) => ({ fileName: file.name, bytes: new Uint8Array(await file.arrayBuffer()) })));
+    const { attachmentIds } = await addSaleAttachments(ctx, getFileStorage(), text(formData, "saleId"), { files });
+    revalidatePath(`/vendas/${text(formData, "saleId")}`);
+    return attachmentIds.length === 1 ? "Comprovante anexado." : `${attachmentIds.length} comprovantes anexados.`;
+  });
+}
+
+export async function removeSaleAttachmentAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return runAction(async (ctx) => {
+    await removeSaleAttachment(ctx, text(formData, "saleId"), text(formData, "attachmentId"));
+    revalidatePath(`/vendas/${text(formData, "saleId")}`);
+    return "Comprovante removido.";
   });
 }

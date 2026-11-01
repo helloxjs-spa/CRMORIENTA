@@ -1,9 +1,11 @@
 "use client";
 
-import { ArrowRight, GripVertical, Loader2, Lock, ShoppingCart } from "lucide-react";
+import { ArrowRight, ChevronDown, GripVertical, Loader2, Lock, ShoppingCart } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useOptimistic, useState, useTransition } from "react";
-import { DropdownMenu } from "@/components/ui/dropdown-menu";
+import { buttonClasses } from "@/components/ui/button";
+import { DropdownMenu, type MenuItem } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/cn";
 import { STAGE_LABELS, type DeadlineInfo } from "@/lib/leads";
 import type { LeadStage, LeadStatus } from "@/server/db/schema";
@@ -50,13 +52,20 @@ function applyMove(columns: KanbanColumn[], move: Move): KanbanColumn[] {
   });
 }
 
+/** Fechamento só recebe card com venda: soltar lá abre o registro de venda do lead. */
+function opensSale(card: KanbanCard): card is KanbanCard & { saleHref: string } {
+  return !!card.saleHref && card.stage !== "CLOSED" && !card.pending;
+}
+
 /**
  * Quadro Kanban. Arrastar (ou "Mover para") só oferece destinos válidos, mas
  * isso é conveniência: a action chama moveLeadStage, que valida transição,
  * escopo, Follow-up 3 vencido e negociação vencida. Em erro, o card volta.
+ * Soltar em Fechamento não move: abre "Registrar venda" (o lead entra lá com a venda).
  */
 export function KanbanBoard({ columns, now, canMove }: { columns: KanbanColumn[]; now: string; canMove: boolean }) {
   const move = useMoveLead();
+  const router = useRouter();
   const [, startTransition] = useTransition();
   const [board, applyOptimistic] = useOptimistic(columns, applyMove);
   const [dragging, setDragging] = useState<KanbanCard | null>(null);
@@ -74,7 +83,7 @@ export function KanbanBoard({ columns, now, canMove }: { columns: KanbanColumn[]
   return (
     <div className="-mx-4 flex snap-x gap-3 overflow-x-auto px-4 pb-4 sm:mx-0 sm:px-0" aria-label="Quadro Kanban">
       {board.map((column) => {
-        const isTarget = !!dragging && dragging.targets.includes(column.stage);
+        const isTarget = !!dragging && (column.stage === "CLOSED" ? opensSale(dragging) : dragging.targets.includes(column.stage));
         return (
           <section
             key={column.stage}
@@ -91,7 +100,10 @@ export function KanbanBoard({ columns, now, canMove }: { columns: KanbanColumn[]
               const card = dragging;
               setDragging(null);
               setOver(null);
-              if (card && isTarget) doMove(card, column.stage);
+              if (!card || !isTarget) return;
+              if (column.stage === "CLOSED") {
+                if (opensSale(card)) router.push(card.saleHref);
+              } else doMove(card, column.stage);
             }}
             className={cn(
               "flex w-72 shrink-0 snap-start flex-col rounded-xl bg-slate-100/80 ring-1 ring-slate-200 transition",
@@ -103,7 +115,7 @@ export function KanbanBoard({ columns, now, canMove }: { columns: KanbanColumn[]
             <header className="flex items-center justify-between gap-2 px-3 py-2.5">
               <h2 className="text-sm font-semibold text-slate-800">
                 {STAGE_LABELS[column.stage]}
-                {column.stage === "CLOSED" && <span className="block text-[11px] font-normal text-slate-500">Entra pelo registro de venda</span>}
+                {column.stage === "CLOSED" && <span className="block text-[11px] font-normal text-slate-500">Solte aqui para registrar a venda</span>}
               </h2>
               <span className="rounded-full bg-white px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-slate-200">{column.total}</span>
             </header>
@@ -120,11 +132,12 @@ export function KanbanBoard({ columns, now, canMove }: { columns: KanbanColumn[]
                     setOver(null);
                   }}
                   onMove={(to) => doMove(card, to)}
+                  onSale={() => opensSale(card) && router.push(card.saleHref)}
                 />
               ))}
               {column.cards.length === 0 && (
                 <li className="rounded-lg border border-dashed border-slate-300 px-3 py-6 text-center text-xs text-slate-400">
-                  {isTarget ? "Solte aqui" : column.stage === "CLOSED" ? "Nenhum lead com venda" : "Nenhum lead"}
+                  {isTarget ? (column.stage === "CLOSED" ? "Solte para registrar a venda" : "Solte aqui") : column.stage === "CLOSED" ? "Nenhum lead com venda" : "Nenhum lead"}
                 </li>
               )}
             </ol>
@@ -148,6 +161,7 @@ function Card({
   onDragStart,
   onDragEnd,
   onMove,
+  onSale,
 }: {
   card: KanbanCard;
   now: Date;
@@ -155,8 +169,13 @@ function Card({
   onDragStart: () => void;
   onDragEnd: () => void;
   onMove: (to: LeadStage) => void;
+  onSale: () => void;
 }) {
-  const draggable = canMove && card.targets.length > 0 && !card.pending;
+  const draggable = canMove && (card.targets.length > 0 || opensSale(card)) && !card.pending;
+  const moveItems: MenuItem[] = [
+    ...card.targets.map((to) => ({ label: STAGE_LABELS[to], icon: ArrowRight, onSelect: () => onMove(to) })),
+    ...(canMove && card.targets.length > 0 && opensSale(card) ? [{ label: `${STAGE_LABELS.CLOSED} (registrar venda)`, icon: ShoppingCart, onSelect: onSale }] : []),
+  ];
   const awaiting = card.deadline === "awaiting_supervisor";
   const lead = { status: card.status, ownerId: card.ownerId, stage: card.stage, stageDueAt: card.stageDueAt ? new Date(card.stageDueAt) : null };
 
@@ -188,11 +207,6 @@ function Card({
         </Link>
         {card.pending ? (
           <Loader2 className="size-4 animate-spin text-slate-400" aria-label="Salvando" />
-        ) : card.targets.length > 0 ? (
-          <DropdownMenu
-            label={`Mover ${card.name}`}
-            items={card.targets.map((to) => ({ label: `Mover para ${STAGE_LABELS[to]}`, icon: ArrowRight, onSelect: () => onMove(to) }))}
-          />
         ) : (
           <LeadAdminActions lead={card.actionTarget} actions={card.adminActions} />
         )}
@@ -209,16 +223,36 @@ function Card({
           {card.teamName ? ` · ${card.teamName}` : ""}
         </p>
       )}
-      {card.saleHref && !card.pending && (
-        <Link
-          href={card.saleHref}
-          draggable={false}
-          className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:underline"
-          aria-label={`Registrar venda para ${card.name}`}
-        >
-          <ShoppingCart className="size-3.5" aria-hidden />
-          Registrar venda
-        </Link>
+      {!card.pending && (card.saleHref || moveItems.length > 0) && (
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+          {card.saleHref ? (
+            <Link
+              href={card.saleHref}
+              draggable={false}
+              className="inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:underline"
+              aria-label={`Registrar venda para ${card.name}`}
+            >
+              <ShoppingCart className="size-3.5" aria-hidden />
+              Registrar venda
+            </Link>
+          ) : (
+            <span />
+          )}
+          {moveItems.length > 0 && (
+            <DropdownMenu
+              label={`Mover ${card.name} para`}
+              items={moveItems}
+              trigger={
+                <>
+                  <ArrowRight className="size-3.5" aria-hidden />
+                  Mover
+                  <ChevronDown className="size-3.5" aria-hidden />
+                </>
+              }
+              triggerClassName={buttonClasses({ variant: "secondary", size: "sm" }, "h-7 px-2")}
+            />
+          )}
+        </div>
       )}
     </li>
   );

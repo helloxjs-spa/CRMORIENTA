@@ -105,9 +105,9 @@ export async function LeadDetail({
           {lead.status === "TRASHED" ? <Badge tone="danger">Na Lixeira</Badge> : <StageBadge stage={lead.stage} />}
           {lead.status === "ACTIVE" && <DeadlineBadge lead={lead} now={now} withDetail={false} />}
         </div>
-        <MoveStageButtons leadId={lead.id} targets={targets} />
-        {(canSell || actions.includes("edit") || actions.some((a) => a !== "edit" && a !== "note")) && (
+        {(targets.length > 0 || canSell || actions.includes("edit") || actions.some((a) => a !== "edit" && a !== "note")) && (
           <div className="flex flex-wrap gap-2">
+            <MoveStageButtons leadId={lead.id} targets={targets} />
             {canSell && (
               <ButtonLink href={`/vendas/nova?lead=${lead.id}`} size="sm">
                 <ShoppingCart className="size-4" aria-hidden />
@@ -173,9 +173,9 @@ export async function LeadDetail({
       </dl>
 
       {actions.includes("note") && (
-        <section aria-label="Adicionar atualização">
-          <h3 className="mb-2 text-sm font-semibold text-slate-900">Atualização</h3>
-          <NoteForm leadId={lead.id} renewsNegotiation={lead.stage === "NEGOTIATION"} />
+        <section aria-label="Adicionar observação">
+          <h3 className="mb-2 text-sm font-semibold text-slate-900">Observação</h3>
+          <NoteForm leadId={lead.id} renewsNegotiation={isSeller && lead.stage === "NEGOTIATION"} />
         </section>
       )}
 

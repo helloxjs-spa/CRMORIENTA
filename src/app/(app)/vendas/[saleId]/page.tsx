@@ -13,11 +13,13 @@ import { hasPermission } from "@/server/authz/permissions";
 import { BUSINESS_RULES } from "@/server/config/business-rules";
 import { getSaleItemCertificates } from "@/server/modules/certificates/certificates.service";
 import { getSaleInstallments } from "@/server/modules/installments/installments.service";
+import { listSaleAttachments } from "@/server/modules/sales/attachments.service";
 import { getSale, getSaleHistoryView, getSaleWithCost, type SaleItemView, type SaleItemWithCost, type SaleView } from "@/server/modules/sales/sales.service";
 import { orNotFound } from "@/server/next/page";
 import { requireServiceContext } from "@/server/next/session";
 import { saleActionsFor } from "../policy";
 import { SaleStatusBadge } from "../sale-badges";
+import { SaleReceipts } from "../receipts";
 import { SaleHistory } from "../sale-history";
 import { InstallmentStatusBadge, MarkPaidButton } from "../../parcelas/installment-parts";
 import { CertificateDialog } from "./certificate-dialog";
@@ -56,6 +58,9 @@ export default async function SalePage({ params }: PageProps<"/vendas/[saleId]">
   // Parcelas (§12; C52): só cartão tem cronograma.
   const installments =
     sale.paymentMethod === "CARD" && hasPermission(ctx.actor, "installments:markPaid") ? await getSaleInstallments(ctx, sale.id) : null;
+  // Comprovantes de pagamento (007): opcionais, vários por venda, no escopo da venda.
+  const receipts = await listSaleAttachments(ctx, sale.id);
+  const canAttachReceipts = hasPermission(ctx.actor, "sales:attachReceipt");
 
   return (
     <>
@@ -168,6 +173,14 @@ export default async function SalePage({ params }: PageProps<"/vendas/[saleId]">
                 ))}
               </Tbody>
             </Table>
+          </Card>
+
+          <Card>
+            <CardHeader
+              title="Comprovantes de pagamento"
+              description={receipts.length === 0 ? "Opcional" : receipts.length === 1 ? "1 arquivo" : `${receipts.length} arquivos`}
+            />
+            <SaleReceipts saleId={sale.id} receipts={receipts} canAttach={canAttachReceipts} />
           </Card>
 
           {installments && (

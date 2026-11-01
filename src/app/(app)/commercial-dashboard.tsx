@@ -27,11 +27,14 @@ export async function CommercialDashboard({
   period,
   periodError,
   currentMonth,
+  afterFilter,
 }: {
   ctx: ServiceContext;
   period: RankingPeriod;
   periodError?: string;
   currentMonth: string;
+  /** Conteúdo logo abaixo do filtro de período (ex.: Resultado do mês). */
+  afterFilter?: ReactNode;
 }) {
   const { actor } = ctx;
   const { from, to } = periodRange(period);
@@ -51,6 +54,7 @@ export async function CommercialDashboard({
   return (
     <div className="space-y-6">
       <PeriodFilter period={period} periodError={periodError} currentMonth={currentMonth} />
+      {afterFilter}
 
       <section aria-labelledby="dash-sales" className="space-y-3">
         <SectionTitle id="dash-sales">Vendas válidas — {periodLabel(period)}</SectionTitle>
@@ -85,31 +89,29 @@ function SectionTitle({ id, children }: { id: string; children: ReactNode }) {
   );
 }
 
+/** Filtro de período compacto, alinhado à esquerda (largura do conteúdo). */
 function PeriodFilter({ period, periodError, currentMonth }: { period: RankingPeriod; periodError?: string; currentMonth: string }) {
+  const control = "h-8 py-1 text-xs";
   return (
-    <Card className="space-y-3 p-4">
-      <form action="/" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4" aria-label="Período do dashboard">
+    <Card className="w-fit max-w-full space-y-2 p-3">
+      <form action="/" className="flex flex-wrap items-end gap-2" aria-label="Período do dashboard">
         <Field label="Mês" htmlFor="dash-month">
-          <Input id="dash-month" name="mes" type="month" defaultValue={period.kind === "month" ? period.month : undefined} />
+          <Input id="dash-month" name="mes" type="month" className={cn(control, "w-40")} defaultValue={period.kind === "month" ? period.month : undefined} />
         </Field>
-        <div className="grid grid-cols-2 gap-2 lg:col-span-2">
-          <Field label="De" htmlFor="dash-from">
-            <Input id="dash-from" name="de" type="date" defaultValue={period.kind === "custom" ? period.from : undefined} />
-          </Field>
-          <Field label="Até" htmlFor="dash-to">
-            <Input id="dash-to" name="ate" type="date" defaultValue={period.kind === "custom" ? period.to : undefined} />
-          </Field>
-        </div>
-        <div className="flex items-end gap-2">
-          <button type="submit" className={buttonClasses()}>
-            Aplicar
-          </button>
-          <Link href={`/?mes=${currentMonth}`} className="inline-flex h-10 items-center px-2 text-sm text-slate-600 hover:text-slate-900">
-            Mês atual
-          </Link>
-        </div>
+        <Field label="De" htmlFor="dash-from">
+          <Input id="dash-from" name="de" type="date" className={cn(control, "w-36")} defaultValue={period.kind === "custom" ? period.from : undefined} />
+        </Field>
+        <Field label="Até" htmlFor="dash-to">
+          <Input id="dash-to" name="ate" type="date" className={cn(control, "w-36")} defaultValue={period.kind === "custom" ? period.to : undefined} />
+        </Field>
+        <button type="submit" className={buttonClasses({ size: "sm" })}>
+          Aplicar
+        </button>
+        <Link href={`/?mes=${currentMonth}`} className="inline-flex h-8 items-center px-1 text-xs text-slate-600 hover:text-slate-900">
+          Mês atual
+        </Link>
       </form>
-      <p className="text-xs text-slate-500">Intervalo personalizado: preencha De e Até (o mês é ignorado). A carteira atual e os alertas não dependem do período.</p>
+      <p className="text-[11px] text-slate-500">Intervalo personalizado: preencha De e Até (o mês é ignorado). A carteira atual e os alertas não dependem do período.</p>
       {periodError && (
         <p role="alert" className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 ring-1 ring-amber-200">
           {periodError} Mostrando {periodLabel(period)}.
@@ -122,7 +124,7 @@ function PeriodFilter({ period, periodError, currentMonth }: { period: RankingPe
 function Field({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
   return (
     <div className="min-w-0 space-y-1">
-      <label htmlFor={htmlFor} className="block text-xs font-medium text-slate-600">
+      <label htmlFor={htmlFor} className="block text-[11px] font-medium text-slate-600">
         {label}
       </label>
       {children}

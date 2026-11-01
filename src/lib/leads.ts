@@ -41,21 +41,23 @@ export const QUEUE_REASON_LABELS: Record<LeadQueueReason, string> = {
 };
 
 /**
- * Máquina de estados do Kanban: destinos permitidos para a movimentação
- * MANUAL do vendedor. O serviço moveLeadStage valida contra esta tabela.
- * - Não há volta arbitrária (ex.: FU3 → FU2).
- * - REWORK só surge por redistribuição ou recuperação da Lixeira.
- * - CLOSED só surge com uma venda (fase Vendas).
- * - FOLLOW_UP_3 → NEGOTIATION só enquanto o FU3 não venceu (checado no serviço).
+ * Destinos da movimentação MANUAL (decisão C32 revista em 31/10/2026: livre).
+ * O serviço moveLeadStage valida contra esta tabela.
+ * - Qualquer etapa vai para qualquer outra, em qualquer direção (inclusive REWORK).
+ * - CLOSED nunca é destino nem origem: o banco exige Fechamento ⇔ venda válida,
+ *   então o lead só entra lá pelo registro de venda.
+ * - Follow-up 3 vencido continua somente leitura para o vendedor (checado no serviço).
  */
+const everyStageBut = (from: LeadStage): LeadStage[] => STAGE_ORDER.filter((to) => to !== from && to !== "CLOSED");
+
 export const STAGE_TRANSITIONS: Record<LeadStage, readonly LeadStage[]> = {
-  NEW: ["NO_ANSWER", "NEGOTIATION"],
-  NO_ANSWER: ["FOLLOW_UP_1", "NEGOTIATION"],
-  FOLLOW_UP_1: ["FOLLOW_UP_2", "NEGOTIATION"],
-  FOLLOW_UP_2: ["FOLLOW_UP_3", "NEGOTIATION"],
-  FOLLOW_UP_3: ["NEGOTIATION"],
-  NEGOTIATION: ["FOLLOW_UP_1"],
-  REWORK: ["FOLLOW_UP_1"],
+  NEW: everyStageBut("NEW"),
+  NO_ANSWER: everyStageBut("NO_ANSWER"),
+  FOLLOW_UP_1: everyStageBut("FOLLOW_UP_1"),
+  FOLLOW_UP_2: everyStageBut("FOLLOW_UP_2"),
+  FOLLOW_UP_3: everyStageBut("FOLLOW_UP_3"),
+  NEGOTIATION: everyStageBut("NEGOTIATION"),
+  REWORK: everyStageBut("REWORK"),
   CLOSED: [],
 };
 

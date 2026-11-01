@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { Table, Tbody, Td, Th } from "@/components/ui/table";
 import { formatLongDate, ROLE_LABELS } from "@/lib/format";
+import { resolveGoalMonth } from "@/lib/goals";
 import { parsePeriodParams } from "@/lib/ranking";
 import { BUSINESS_RULES } from "@/server/config/business-rules";
 import type { ServiceContext } from "@/server/context";
@@ -14,6 +15,7 @@ import { getMyTeam, getTeam, listTeams } from "@/server/modules/teams/teams.serv
 import { listUsers } from "@/server/modules/users/users.service";
 import { requireServiceContext } from "@/server/next/session";
 import { CommercialDashboard } from "./commercial-dashboard";
+import { MonthlyResult } from "./monthly-result";
 
 export const metadata: Metadata = { title: "Início" };
 
@@ -22,12 +24,30 @@ function currentMonth(now = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: BUSINESS_RULES.timezone, year: "numeric", month: "2-digit" }).format(now);
 }
 
-/** Início: dashboard comercial (§17) do período na URL + estrutura da organização. */
+/** Hoje ("AAAA-MM-DD") no fuso único do negócio. */
+function businessToday(now = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: BUSINESS_RULES.timezone }).format(now);
+}
+
+/**
+ * Início: dashboard comercial (§17) do período na URL + Resultado do mês
+ * (metas, ?resultado=AAAA-MM; padrão: o mês do filtro) + estrutura da organização.
+ */
 export default async function HomePage({ searchParams }: PageProps<"/">) {
   const ctx = await requireServiceContext();
   const firstName = ctx.actor.name.split(" ")[0];
   const month = currentMonth();
-  const { period, periodError } = parsePeriodParams(await searchParams, month);
+  const raw = await searchParams;
+  const { period, periodError } = parsePeriodParams(raw, month);
+  const one = (key: string) => (typeof raw[key] === "string" ? (raw[key] as string) : undefined);
+  const resultMonth = resolveGoalMonth(one("resultado"), period.kind === "month" ? period.month : period.to.slice(0, 7));
+  // As setas do Resultado do mês trocam só ?resultado, mantendo o filtro do dashboard.
+  const resultHref = (target: string) => {
+    const search = new URLSearchParams();
+    for (const key of ["mes", "de", "ate"]) if (one(key)) search.set(key, one(key)!);
+    search.set("resultado", target);
+    return `/?${search.toString()}`;
+  };
 
   return (
     <>
@@ -39,7 +59,13 @@ export default async function HomePage({ searchParams }: PageProps<"/">) {
           </span>
         }
       />
-      <CommercialDashboard ctx={ctx} period={period} periodError={periodError} currentMonth={month} />
+      <CommercialDashboard
+        ctx={ctx}
+        period={period}
+        periodError={periodError}
+        currentMonth={month}
+        afterFilter={<MonthlyResult ctx={ctx} month={resultMonth} today={businessToday()} hrefFor={resultHref} />}
+      />
       <h2 className="mb-3 mt-8 text-sm font-semibold text-slate-900">Estrutura</h2>
       {ctx.actor.role === "ADMIN" && <AdminOverview ctx={ctx} />}
       {ctx.actor.role === "SUPERVISOR" && <SupervisorOverview ctx={ctx} />}

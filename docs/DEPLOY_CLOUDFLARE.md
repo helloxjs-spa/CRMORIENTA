@@ -33,7 +33,13 @@ Não configure no Worker: `SEED_PASSWORD` (só banco local) nem `NODE_ENV` (o bu
 
 ### No build (Workers Builds › Settings › Build › Variables)
 
-Nenhuma variável é obrigatória: o build não acessa o banco. Opcional: `NODE_VERSION=22`.
+O build não acessa o banco. Recomendada (ver nota "Hyperdrive no deploy" na seção 4):
+
+| Nome | Valor |
+|---|---|
+| `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` | `postgresql://postgres@127.0.0.1:5432/crm_local` (fictício, sem senha) |
+
+Opcional: `NODE_VERSION=22`.
 
 ## 3. Hyperdrive (uma vez)
 
@@ -47,6 +53,15 @@ Nenhuma variável é obrigatória: o build não acessa o banco. Opcional: `NODE_
    > **Cache desligado é obrigatório.** O Hyperdrive guarda resultados de `SELECT` por até 60 s; com cache, uma sessão revogada, um usuário desativado ou uma troca de equipe poderiam continuar valendo por esse tempo, e telas mostrariam dados antigos.
 
 3. Copie o `id` retornado para `wrangler.jsonc` › `hyperdrive[0].id` (substituindo `COLE_AQUI_O_ID_DO_HYPERDRIVE`) e faça commit.
+
+### R2 — comprovantes de pagamento (uma vez)
+
+Os comprovantes anexados às vendas ficam num bucket R2 **privado**; o Postgres guarda só os dados do anexo (`sale_attachments`, migration 007).
+
+1. Cloudflare › R2 Object Storage › Create bucket: nome `crm-comprovantes` (padrão de localização; **sem** acesso público, sem domínio).
+2. O `wrangler.jsonc` já declara o binding `RECEIPTS` → `crm-comprovantes`; o próximo deploy liga o Worker ao bucket.
+
+Sem o binding, abrir ou anexar comprovante falha com "Armazenamento de comprovantes não configurado". Em `next dev`/`next start` (fora do Workers) os arquivos vão para `.data/receipts` (fora do git).
 
 ## 4. Deploy
 
@@ -62,7 +77,7 @@ Cloudflare › Workers & Pages › Create › Import a repository, e configure:
 
 A cada push na branch configurada, a Cloudflare compila em Linux e publica.
 
-> **Hyperdrive no deploy.** `wrangler deploy` detecta o projeto OpenNext e chama `opennextjs-cloudflare deploy`, que monta um proxy local dos bindings antes de publicar. Sem um endereço local para o Hyperdrive, falha com `When developing locally, you should use a local Postgres connection string to emulate Hyperdrive`. Por isso o `wrangler.jsonc` tem um `localConnectionString` **fictício** (sem senha, nunca usado em produção nem conectado no deploy). Não remova.
+> **Hyperdrive no deploy.** `wrangler deploy` detecta o projeto OpenNext e chama `opennextjs-cloudflare deploy`, que monta um proxy local dos bindings antes de publicar. Sem um endereço local para o Hyperdrive, falha com `When developing locally, you should use a local Postgres connection string to emulate Hyperdrive`. Por isso o `wrangler.jsonc` tem um `localConnectionString` **fictício** (sem senha, nunca usado em produção nem conectado no deploy) e a mesma string vai como variável de build (seção 2), que o wrangler consulta antes do arquivo. Não remova nenhum dos dois.
 
 ### Opção B — Linha de comando (Linux/macOS/WSL)
 

@@ -23,7 +23,7 @@ export const metadata: Metadata = { title: "Kanban" };
 
 /**
  * Colunas do quadro (Lixeira é visão separada). Fechamento só recebe leads
- * pelo registro de venda: nenhuma transição de etapa leva a ele.
+ * pelo registro de venda: soltar um card nele abre "Registrar venda".
  */
 const BOARD_STAGES: LeadStage[] = ["NEW", "NO_ANSWER", "FOLLOW_UP_1", "FOLLOW_UP_2", "FOLLOW_UP_3", "NEGOTIATION", "REWORK", "CLOSED"];
 /** Cards por coluna; o total aparece no cabeçalho e o restante fica na lista. */
@@ -101,7 +101,7 @@ export default async function KanbanPage({ searchParams }: PageProps<"/kanban">)
         title="Kanban"
         description={
           hasPermission(actor, "leads:move")
-            ? "Arraste o card para a próxima etapa. Só os destinos permitidos aceitam o card."
+            ? "Arraste o card para qualquer etapa ou use o botão Mover. Em Fechamento, soltar o card abre o registro de venda."
             : "Acompanhe o funil da equipe. A movimentação de etapas é feita pelo vendedor responsável."
         }
       />

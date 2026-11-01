@@ -939,8 +939,10 @@ export async function addLeadNote({ db, actor }: ServiceContext, rawId: unknown,
       .values({ leadId: lead.id, cycleId: cycle.id, stage: lead.stage, authorId: actor.userId, body })
       .returning({ id: leadNotes.id, createdAt: leadNotes.createdAt });
 
+    // Só a atualização do próprio vendedor renova a negociação (C34): observação
+    // de supervisor/admin fica no histórico sem mexer no prazo.
     let renewedDueAt: Date | null = null;
-    if (lead.stage === "NEGOTIATION") {
+    if (lead.stage === "NEGOTIATION" && actor.role === "SELLER") {
       renewedDueAt = new Date(note.createdAt.getTime() + BUSINESS_RULES.negotiationDeadlineHours * 3_600_000);
       await tx.update(leads).set({ stageDueAt: renewedDueAt }).where(eq(leads.id, lead.id));
     }
@@ -963,13 +965,14 @@ export async function addLeadNote({ db, actor }: ServiceContext, rawId: unknown,
 }
 
 // ---------------------------------------------------------------------------
-// Movimentação de etapa (Kanban) — vendedor responsável
+// Movimentação de etapa (Kanban) — vendedor, supervisor e admin, no escopo
 // ---------------------------------------------------------------------------
 
 /**
  * Move o lead para outra etapa, validando no backend, nesta ordem: permissão
- * e escopo (lead próprio e ativo), negociação vencida em OUTRO lead, transição
- * permitida (STAGE_TRANSITIONS) e Follow-up 3 vencido. Define a entrada na
+ * e escopo (próprios / equipe / todos), negociação vencida em OUTRO lead (só
+ * SELLER), Fechamento (nunca origem nem destino), transição permitida
+ * (STAGE_TRANSITIONS) e Follow-up 3 vencido (só SELLER). Define a entrada na
  * etapa e o prazo (24 h corridas nas etapas com prazo; nenhum nas demais) e
  * grava STAGE_CHANGED, tudo na mesma transação.
  */
@@ -987,8 +990,8 @@ export async function moveLeadStage({ db, actor }: ServiceContext, rawId: unknow
     if (toStage === "CLOSED") {
       throw new ValidationError("Fechamento só acontece ao registrar uma venda.");
     }
-    if (toStage === "REWORK") {
-      throw new ValidationError("Retrabalho só acontece por redistribuição ou recuperação da Lixeira, feitas pelo supervisor.");
+    if (lead.stage === "CLOSED") {
+      throw new ValidationError("Lead em Fechamento tem venda registrada e não muda de etapa pelo Kanban.");
     }
     if (!canTransition(lead.stage, toStage)) {
       throw new ValidationError(`Movimentação não permitida: de ${STAGE_LABELS[lead.stage]} para ${STAGE_LABELS[toStage]}.`);

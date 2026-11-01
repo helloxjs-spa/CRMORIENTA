@@ -4,7 +4,7 @@ import { STAGE_TRANSITIONS, STAGES_WITH_DEADLINE } from "@/lib/leads";
 import { BUSINESS_RULES } from "@/server/config/business-rules";
 import type { DatabaseHandle } from "@/server/db/connect";
 import { LEAD_STAGES, leadCycles, leadEvents, leads, type LeadStage } from "@/server/db/schema";
-import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "@/server/errors";
+import { ConflictError, NotFoundError, ValidationError } from "@/server/errors";
 import {
   addLeadNote,
   AWAITING_SUPERVISOR_MESSAGE,
@@ -67,17 +67,11 @@ describe("transições válidas (vendedor responsável)", () => {
     }
   });
 
-  it("o mapa cobre exatamente o fluxo combinado", () => {
-    expect(STAGE_TRANSITIONS).toEqual({
-      NEW: ["NO_ANSWER", "NEGOTIATION"],
-      NO_ANSWER: ["FOLLOW_UP_1", "NEGOTIATION"],
-      FOLLOW_UP_1: ["FOLLOW_UP_2", "NEGOTIATION"],
-      FOLLOW_UP_2: ["FOLLOW_UP_3", "NEGOTIATION"],
-      FOLLOW_UP_3: ["NEGOTIATION"],
-      NEGOTIATION: ["FOLLOW_UP_1"],
-      REWORK: ["FOLLOW_UP_1"],
-      CLOSED: [],
-    });
+  it("o mapa é livre: qualquer etapa vai para qualquer outra, menos Fechamento (só com venda)", () => {
+    for (const from of LEAD_STAGES) {
+      const expected = from === "CLOSED" ? [] : LEAD_STAGES.filter((to) => to !== from && to !== "CLOSED");
+      expect([...STAGE_TRANSITIONS[from]].sort(), from).toEqual([...expected].sort());
+    }
   });
 });
 
@@ -96,28 +90,35 @@ describe("transições inválidas são recusadas no backend", () => {
     expect(await rowOf(id)).toEqual(before);
   });
 
-  it("mensagens claras para Fechamento, Retrabalho e volta de etapa", async () => {
+  it("mensagens claras para Fechamento e etapa atual; voltar etapa é permitido", async () => {
     const id = await newLead(org.ids.sellerA1);
     await putIn(id, "FOLLOW_UP_3");
     const seller = await org.ctx(org.ids.sellerA1);
     const message = (to: LeadStage) => moveLeadStage(seller, id, { toStage: to }).catch((e: Error) => e.message);
     expect(await message("CLOSED")).toBe("Fechamento só acontece ao registrar uma venda.");
-    expect(await message("REWORK")).toBe("Retrabalho só acontece por redistribuição ou recuperação da Lixeira, feitas pelo supervisor.");
-    expect(await message("FOLLOW_UP_2")).toBe("Movimentação não permitida: de Follow-up 3 para Follow-up 2.");
     expect(await message("FOLLOW_UP_3")).toBe("O lead já está em Follow-up 3.");
     await expect(moveLeadStage(seller, id, { toStage: "QUALQUER" })).rejects.toBeInstanceOf(ValidationError);
+    await expect(moveLeadStage(seller, id, { toStage: "FOLLOW_UP_2" })).resolves.toMatchObject({ stage: "FOLLOW_UP_2" });
   });
 });
 
 describe("quem pode movimentar", () => {
-  it("vendedor não movimenta lead de outro vendedor (404) e supervisor/admin não movimentam (permissão)", async () => {
+  it("vendedor só movimenta a própria carteira e supervisor só a própria equipe (404); admin movimenta todos", async () => {
     const ofA2 = await newLead(org.ids.sellerA2);
-    await expect(moveLeadStage(await org.ctx(org.ids.sellerA1), ofA2, { toStage: "NO_ANSWER" })).rejects.toBeInstanceOf(NotFoundError);
-    await expect(moveLeadStage(await org.ctx(org.ids.sellerB1), ofA2, { toStage: "NO_ANSWER" })).rejects.toBeInstanceOf(NotFoundError);
-    for (const userId of [org.ids.supA, org.ids.supB, org.ids.admin]) {
-      await expect(moveLeadStage(await org.ctx(userId), ofA2, { toStage: "NO_ANSWER" })).rejects.toBeInstanceOf(ForbiddenError);
+    for (const userId of [org.ids.sellerA1, org.ids.sellerB1, org.ids.supB]) {
+      await expect(moveLeadStage(await org.ctx(userId), ofA2, { toStage: "NO_ANSWER" })).rejects.toBeInstanceOf(NotFoundError);
     }
     expect((await rowOf(ofA2)).stage).toBe("NEW");
+
+    await expect(moveLeadStage(await org.ctx(org.ids.supA), ofA2, { toStage: "NO_ANSWER" })).resolves.toMatchObject({ stage: "NO_ANSWER" });
+    await expect(moveLeadStage(await org.ctx(org.ids.admin), ofA2, { toStage: "REWORK" })).resolves.toMatchObject({ stage: "REWORK" });
+    expect(await lastEvent(ofA2)).toMatchObject({
+      type: "STAGE_CHANGED",
+      actorId: org.ids.admin,
+      fromStage: "NO_ANSWER",
+      stage: "REWORK",
+      ownerId: org.ids.sellerA2,
+    });
   });
 
   it("campos extras são recusados (não dá para forçar prazo ou responsável)", async () => {

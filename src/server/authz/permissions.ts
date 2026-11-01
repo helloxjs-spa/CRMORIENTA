@@ -32,10 +32,10 @@ const MATRIX = {
   "leads:create": ["ADMIN", "SUPERVISOR", "SELLER"],
   /** Editar nome, telefone e curso de interesse: sempre combinado com o escopo. */
   "leads:edit": ["ADMIN", "SUPERVISOR", "SELLER"],
-  /** Observações: quem opera o lead (o vendedor responsável). */
-  "leads:addNote": ["SELLER"],
-  /** Movimentar etapas no Kanban: só quem tem carteira (decisão C5). */
-  "leads:move": ["SELLER"],
+  /** Observações: todos, sempre combinado com o escopo (decidido pelo usuário em 31/10/2026). */
+  "leads:addNote": ["ADMIN", "SUPERVISOR", "SELLER"],
+  /** Movimentar etapas no Kanban: todos, sempre combinado com o escopo (dúvida 26, decidida em 31/10/2026). */
+  "leads:move": ["ADMIN", "SUPERVISOR", "SELLER"],
   "leads:transfer": ["ADMIN", "SUPERVISOR"],
   "leads:redistribute": ["ADMIN", "SUPERVISOR"],
   "leads:trash": ["ADMIN", "SUPERVISOR"],
@@ -68,6 +68,16 @@ const MATRIX = {
   "courses:viewCost": ["ADMIN"],
   "finance:viewCostAndProfit": ["ADMIN"],
   "certificates:operate": ["ADMIN", "SUPERVISOR", "SELLER"],
+  /**
+   * Resultado do mês (metas, 008; decisões do usuário em 31/10/2026): todos veem
+   * o faturamento do time e de cada vendedor (nunca custo/lucro); a meta geral
+   * é do ADMIN; a de vendedor, do ADMIN ou do SUPERVISOR da equipe dele.
+   */
+  "goals:view": ["ADMIN", "SUPERVISOR", "SELLER"],
+  "goals:setGeneral": ["ADMIN"],
+  "goals:setSeller": ["ADMIN", "SUPERVISOR"],
+  /** Anexar comprovantes de pagamento: todos, no escopo da venda (C50). */
+  "sales:attachReceipt": ["ADMIN", "SUPERVISOR", "SELLER"],
   "ranking:view": ["ADMIN", "SUPERVISOR", "SELLER"],
   "reports:export": ["ADMIN", "SUPERVISOR"],
 } as const satisfies Record<string, readonly UserRole[]>;

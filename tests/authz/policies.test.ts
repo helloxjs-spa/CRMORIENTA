@@ -51,17 +51,13 @@ describe("RBAC — matriz de permissões", () => {
     expect(hasPermission(sellerA1, "sales:setDate")).toBe(false);
   });
 
-  it("leads: todos veem (com escopo); só o vendedor registra observação; supervisor e admin operam a carteira", () => {
+  it("leads: todos veem, editam, movimentam e registram observação (com escopo); supervisor e admin operam a carteira", () => {
     for (const actor of [admin, supA, sellerA1]) {
       expect(hasPermission(actor, "leads:view")).toBe(true);
       expect(hasPermission(actor, "leads:edit")).toBe(true);
+      expect(hasPermission(actor, "leads:move")).toBe(true);
+      expect(hasPermission(actor, "leads:addNote")).toBe(true);
     }
-    expect(hasPermission(sellerA1, "leads:addNote")).toBe(true);
-    expect(hasPermission(sellerA1, "leads:move")).toBe(true);
-    expect(hasPermission(supA, "leads:move")).toBe(false);
-    expect(hasPermission(admin, "leads:move")).toBe(false);
-    expect(hasPermission(supA, "leads:addNote")).toBe(false);
-    expect(hasPermission(admin, "leads:addNote")).toBe(false);
     for (const permission of ["leads:transfer", "leads:redistribute", "leads:trash", "leads:restore"] as const) {
       expect(hasPermission(admin, permission)).toBe(true);
       expect(hasPermission(supA, permission)).toBe(true);
