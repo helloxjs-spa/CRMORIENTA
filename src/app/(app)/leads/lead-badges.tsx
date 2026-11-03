@@ -1,7 +1,7 @@
 import { AlertTriangle, Clock, Hourglass, UserX } from "lucide-react";
 import { Badge, type BadgeTone } from "@/components/ui/badge";
 import { formatRelativeDateTime } from "@/lib/format";
-import { deadlineInfo, QUEUE_REASON_LABELS, STAGE_LABELS, type LeadQueueReason } from "@/lib/leads";
+import { deadlineAlert, deadlineInfo, QUEUE_REASON_LABELS, STAGE_LABELS, type LeadQueueReason } from "@/lib/leads";
 import type { LeadStage, LeadStatus } from "@/server/db/schema";
 
 const STAGE_TONES: Record<LeadStage, BadgeTone> = {
@@ -29,6 +29,15 @@ export function QueueReasonBadge({ reason }: { reason: LeadQueueReason }) {
 }
 
 type DeadlineLead = { status: LeadStatus; ownerId: string | null; stage: LeadStage; stageDueAt: Date | null };
+
+function DueSoonBadge({ dueAt, now }: { dueAt: Date; now: Date }) {
+  return (
+    <Badge tone="warning" className="gap-1">
+      <Clock className="size-3" aria-hidden />
+      Vence {formatRelativeDateTime(dueAt, now)}
+    </Badge>
+  );
+}
 
 /** Situação do prazo da etapa (calculada a cada leitura a partir de stage_due_at). */
 export function DeadlineBadge({ lead, now, withDetail = true }: { lead: DeadlineLead; now: Date; withDetail?: boolean }) {
@@ -61,13 +70,10 @@ export function DeadlineBadge({ lead, now, withDetail = true }: { lead: Deadline
         </span>
       );
     case "due_today":
-      return (
-        <Badge tone="warning" className="gap-1">
-          <Clock className="size-3" aria-hidden />
-          Vence {formatRelativeDateTime(info.dueAt, now)}
-        </Badge>
-      );
+      return <DueSoonBadge dueAt={info.dueAt} now={now} />;
     case "on_time":
+      // Prazo só no dia seguinte, mas já na faixa de alerta: "No prazo" contradiria o card amarelo.
+      if (deadlineAlert(lead, now) === "warning") return <DueSoonBadge dueAt={info.dueAt} now={now} />;
       return (
         <span className="inline-flex flex-col items-start gap-0.5">
           <Badge tone="success">No prazo</Badge>

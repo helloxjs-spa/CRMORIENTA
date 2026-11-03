@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import { Drawer } from "@/components/ui/drawer";
 import { PageHeader } from "@/components/ui/page-header";
-import { courseLabel, deadlineInfo } from "@/lib/leads";
+import { courseLabel } from "@/lib/leads";
 import { formatPhone } from "@/lib/phone";
 import { hasPermission } from "@/server/authz/permissions";
 import type { LeadStage } from "@/server/db/schema";
@@ -76,7 +76,6 @@ export default async function KanbanPage({ searchParams }: PageProps<"/kanban">)
         status: lead.status,
         ownerId: lead.ownerId,
         stageDueAt: lead.stageDueAt?.toISOString() ?? null,
-        deadline: deadlineInfo(lead, now).kind,
         href: leadsHref(params, { lead: lead.id }, "/kanban"),
         targets: moveTargetsFor(lead, actor, situation, now),
         adminActions: leadActionsFor(lead, actor, situation),

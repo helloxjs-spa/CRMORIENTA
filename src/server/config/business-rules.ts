@@ -16,6 +16,11 @@ export const BUSINESS_RULES = {
    * etapa (Documento Mestre §7; "1 dia" definido pelo cliente como 24 h).
    */
   followUpDeadlineHours: 24,
+  /**
+   * Horas de prazo consumidas a partir das quais o card do Kanban fica amarelo;
+   * passado o prazo, fica vermelho (decisão do usuário em 02/11/2026).
+   */
+  deadlineWarningHours: 20,
   /** Prazo da negociação: 24 horas corridas desde a última atualização válida (§8). */
   negotiationDeadlineHours: 24,
   /**

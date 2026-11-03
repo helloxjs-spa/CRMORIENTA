@@ -242,7 +242,9 @@ As 9 colunas do Kanban misturam conceitos diferentes. Colocar todas num único e
 | **Ciclo de atendimento** | `lead_cycles`; ciclo atual = o ciclo **aberto** | `INITIAL` (ciclo 1) e `REWORK` (ciclos 2, 3…). Sem referência circular `leads → lead_cycles` |
 | **Vencimentos** | **derivados** de `stage_due_at < agora` | Follow-up vencido, "aguardando supervisor" (FU3 vencido) e negociação vencida são calculados, não gravados como estado. Sem cron e sem estado desatualizado |
 
-**Prazos:** "1 dia" = **24 horas corridas** (decisão do cliente). `stage_due_at = stage_entered_at + 24h` nos follow-ups; na negociação, `entrada ou última observação + 24h`. **Não Respondeu**, Lead Cadastrado e Retrabalho não têm prazo (o banco recusa prazo nessas etapas). A **transferência não reinicia** prazo. Tudo em `timestamptz`; os parâmetros ficam em `business-rules.ts` (`followUpDeadlineHours`, `negotiationDeadlineHours`).
+**Prazos:** "1 dia" = **24 horas corridas** (decisão do cliente). `stage_due_at = stage_entered_at + 24h` nos follow-ups; na negociação, `entrada ou última observação + 24h`. **Não Respondeu**, Lead Cadastrado e Retrabalho não têm prazo (o banco recusa prazo nessas etapas). A **transferência não reinicia** prazo. Tudo em `timestamptz`; os parâmetros ficam em `business-rules.ts` (`followUpDeadlineHours`, `deadlineWarningHours`, `negotiationDeadlineHours`).
+
+**Alerta visual no Kanban (decisão do usuário, 02/11/2026):** nos três follow-ups e na negociação, o card fica amarelo a partir de 20 h de prazo consumidas e vermelho depois das 24 h (derivado de `stage_due_at`, sem gravar nada). Vale também para lead sem responsável que esteja nessas etapas. Na negociação, a observação do vendedor renova o prazo e, com ele, a cor.
 
 **Fluxo de retrabalho (decisão do cliente):**
 

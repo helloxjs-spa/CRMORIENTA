@@ -119,3 +119,17 @@ export function deadlineInfo(lead: DeadlineFields, now: Date): DeadlineInfo {
   if (dueAt < now) return lead.stage === "FOLLOW_UP_3" ? { kind: "awaiting_supervisor", dueAt } : { kind: "overdue", dueAt };
   return sameBusinessDay(dueAt, now) ? { kind: "due_today", dueAt } : { kind: "on_time", dueAt };
 }
+
+export type DeadlineAlert = "warning" | "expired";
+
+/**
+ * Alerta de cor do card em etapa com prazo: amarelo perto do prazo, vermelho
+ * depois dele. Lead sem responsável também recebe: o prazo dele continua correndo.
+ */
+export function deadlineAlert(lead: DeadlineFields, now: Date): DeadlineAlert | null {
+  if (lead.status !== "ACTIVE" || !lead.stageDueAt) return null;
+  const remainingMs = lead.stageDueAt.getTime() - now.getTime();
+  if (remainingMs < 0) return "expired";
+  const deadlineHours = lead.stage === "NEGOTIATION" ? BUSINESS_RULES.negotiationDeadlineHours : BUSINESS_RULES.followUpDeadlineHours;
+  return remainingMs <= (deadlineHours - BUSINESS_RULES.deadlineWarningHours) * 3_600_000 ? "warning" : null;
+}

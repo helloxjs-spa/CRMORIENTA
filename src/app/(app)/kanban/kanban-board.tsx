@@ -3,11 +3,11 @@
 import { ArrowRight, ChevronDown, GripVertical, Loader2, Lock, ShoppingCart } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useOptimistic, useState, useTransition } from "react";
+import { useEffect, useOptimistic, useState, useTransition } from "react";
 import { buttonClasses } from "@/components/ui/button";
 import { DropdownMenu, type MenuItem } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/cn";
-import { STAGE_LABELS, type DeadlineInfo } from "@/lib/leads";
+import { deadlineAlert, STAGE_LABELS, type DeadlineAlert } from "@/lib/leads";
 import type { LeadStage, LeadStatus } from "@/server/db/schema";
 import { DeadlineBadge } from "../leads/lead-badges";
 import { LeadAdminActions, type LeadActionTarget } from "../leads/lead-actions";
@@ -25,7 +25,6 @@ export type KanbanCard = {
   status: LeadStatus;
   ownerId: string | null;
   stageDueAt: string | null;
-  deadline: DeadlineInfo["kind"];
   href: string;
   /** Destinos permitidos agora (calculados no servidor; o backend revalida). */
   targets: LeadStage[];
@@ -39,6 +38,13 @@ export type KanbanCard = {
 export type KanbanColumn = { stage: LeadStage; total: number; listHref: string; cards: KanbanCard[] };
 
 type Move = { leadId: string; from: LeadStage; to: LeadStage };
+
+const CLOCK_TICK_MS = 60_000;
+
+const ALERT_CARD_CLASSES: Record<DeadlineAlert, string> = {
+  warning: "bg-amber-200 ring-amber-400",
+  expired: "bg-red-200 ring-red-400",
+};
 
 function applyMove(columns: KanbanColumn[], move: Move): KanbanColumn[] {
   const card = columns.find((c) => c.stage === move.from)?.cards.find((c) => c.id === move.leadId);
@@ -70,7 +76,14 @@ export function KanbanBoard({ columns, now, canMove }: { columns: KanbanColumn[]
   const [board, applyOptimistic] = useOptimistic(columns, applyMove);
   const [dragging, setDragging] = useState<KanbanCard | null>(null);
   const [over, setOver] = useState<LeadStage | null>(null);
-  const nowDate = new Date(now);
+  // A cor do card muda com a tela aberta; até o primeiro tique vale a hora do servidor.
+  const [clock, setClock] = useState(0);
+  const nowDate = new Date(Math.max(Date.parse(now), clock));
+
+  useEffect(() => {
+    const timer = setInterval(() => setClock(Date.now()), CLOCK_TICK_MS);
+    return () => clearInterval(timer);
+  }, []);
 
   const doMove = (card: KanbanCard, to: LeadStage) => {
     if (!card.targets.includes(to)) return;
@@ -176,8 +189,10 @@ function Card({
     ...card.targets.map((to) => ({ label: STAGE_LABELS[to], icon: ArrowRight, onSelect: () => onMove(to) })),
     ...(canMove && card.targets.length > 0 && opensSale(card) ? [{ label: `${STAGE_LABELS.CLOSED} (registrar venda)`, icon: ShoppingCart, onSelect: onSale }] : []),
   ];
-  const awaiting = card.deadline === "awaiting_supervisor";
   const lead = { status: card.status, ownerId: card.ownerId, stage: card.stage, stageDueAt: card.stageDueAt ? new Date(card.stageDueAt) : null };
+  // Durante a movimentação otimista o prazo ainda é o da etapa anterior.
+  const alert = card.pending ? null : deadlineAlert(lead, now);
+  const mutedText = alert ? "text-slate-800" : "text-slate-500";
 
   return (
     <li
@@ -189,21 +204,21 @@ function Card({
       }}
       onDragEnd={onDragEnd}
       className={cn(
-        "group relative rounded-lg bg-white p-3 shadow-sm ring-1 ring-slate-200 transition",
+        "group relative rounded-lg p-3 shadow-sm ring-1 transition",
+        alert ? ALERT_CARD_CLASSES[alert] : "bg-white ring-slate-200",
         draggable && "cursor-grab active:cursor-grabbing hover:ring-brand-300",
-        awaiting && "ring-2 ring-brand-200",
         card.pending && "opacity-70",
       )}
     >
       <div className="flex items-start gap-1.5">
         {draggable ? (
-          <GripVertical className="mt-0.5 size-4 shrink-0 text-slate-300 group-hover:text-slate-400" aria-hidden />
+          <GripVertical className={cn("mt-0.5 size-4 shrink-0", alert ? "text-slate-600" : "text-slate-300 group-hover:text-slate-400")} aria-hidden />
         ) : (
-          canMove && <Lock className="mt-0.5 size-3.5 shrink-0 text-slate-300" aria-label="Somente leitura" />
+          canMove && <Lock className={cn("mt-0.5 size-3.5 shrink-0", alert ? "text-slate-600" : "text-slate-300")} aria-label="Somente leitura" />
         )}
         <Link href={card.href} scroll={false} className="min-w-0 flex-1" draggable={false}>
           <p className="truncate text-sm font-medium text-slate-900 hover:text-brand-700">{card.name}</p>
-          <p className="text-xs tabular-nums text-slate-500">{card.phone}</p>
+          <p className={cn("text-xs tabular-nums", mutedText)}>{card.phone}</p>
         </Link>
         {card.pending ? (
           <Loader2 className="size-4 animate-spin text-slate-400" aria-label="Salvando" />
@@ -211,14 +226,14 @@ function Card({
           <LeadAdminActions lead={card.actionTarget} actions={card.adminActions} />
         )}
       </div>
-      <p className="mt-1.5 truncate text-xs text-slate-600" title={card.course}>
+      <p className={cn("mt-1.5 truncate text-xs", alert ? "text-slate-800" : "text-slate-600")} title={card.course}>
         {card.course}
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <DeadlineBadge lead={lead} now={now} withDetail={false} />
       </div>
       {(card.ownerName || card.teamName) && (
-        <p className="mt-2 truncate text-[11px] text-slate-500">
+        <p className={cn("mt-2 truncate text-[11px]", mutedText)}>
           {card.ownerName}
           {card.teamName ? ` · ${card.teamName}` : ""}
         </p>

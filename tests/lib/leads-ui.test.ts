@@ -4,7 +4,7 @@ import { boardParams, createdRangeInverted, hasResultFilters, leadsHref, parseLe
 import type { Actor } from "@/server/authz/actor";
 import { formatRelativeDateTime } from "@/lib/format";
 import { describeLeadEvent } from "@/lib/lead-timeline";
-import { deadlineInfo, STAGE_ORDER, stageFromSlug, stageToSlug } from "@/lib/leads";
+import { deadlineAlert, deadlineInfo, STAGE_ORDER, stageFromSlug, stageToSlug } from "@/lib/leads";
 import { LEAD_STAGES } from "@/server/db/schema";
 import type { LeadTimelineEntry } from "@/server/modules/leads/leads.service";
 
@@ -43,6 +43,52 @@ describe("situação do prazo", () => {
     expect(deadlineInfo({ ...base, stage: "FOLLOW_UP_3", stageDueAt: due }, NOW).kind).toBe("awaiting_supervisor");
     expect(deadlineInfo({ ...base, ownerId: null, stageDueAt: due }, NOW).kind).toBe("unassigned");
     expect(deadlineInfo({ ...base, status: "TRASHED", stageDueAt: due }, NOW).kind).toBe("none");
+  });
+});
+
+describe("alerta de cor do card", () => {
+  const base = { status: "ACTIVE" as const, ownerId: "a1", stage: "FOLLOW_UP_1" as const };
+  const dueIn = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000);
+
+  it("sem alerta até 20 h, amarelo de 20 h a 24 h, vermelho depois de 24 h", () => {
+    expect(deadlineAlert({ ...base, stageDueAt: dueIn(24 * 60) }, NOW)).toBeNull();
+    expect(deadlineAlert({ ...base, stageDueAt: dueIn(4 * 60 + 1) }, NOW)).toBeNull();
+    expect(deadlineAlert({ ...base, stageDueAt: dueIn(4 * 60) }, NOW)).toBe("warning");
+    expect(deadlineAlert({ ...base, stageDueAt: dueIn(0) }, NOW)).toBe("warning");
+    expect(deadlineAlert({ ...base, stageDueAt: dueIn(-1) }, NOW)).toBe("expired");
+  });
+
+  it("amarelo também quando o prazo cai no dia seguinte", () => {
+    const lateEvening = new Date("2026-10-11T01:00:00Z"); // 22h em São Paulo
+    const dueAfterMidnight = new Date("2026-10-11T04:00:00Z"); // 01h do dia seguinte
+    expect(deadlineInfo({ ...base, stageDueAt: dueAfterMidnight }, lateEvening).kind).toBe("on_time");
+    expect(deadlineAlert({ ...base, stageDueAt: dueAfterMidnight }, lateEvening)).toBe("warning");
+  });
+
+  it("vale nos três follow-ups; Follow-up 3 vencido fica vermelho", () => {
+    expect(deadlineAlert({ ...base, stage: "FOLLOW_UP_2", stageDueAt: dueIn(60) }, NOW)).toBe("warning");
+    expect(deadlineAlert({ ...base, stage: "FOLLOW_UP_3", stageDueAt: dueIn(60) }, NOW)).toBe("warning");
+    expect(deadlineAlert({ ...base, stage: "FOLLOW_UP_3", stageDueAt: dueIn(-60) }, NOW)).toBe("expired");
+  });
+
+  it("negociação segue as mesmas faixas", () => {
+    const negotiation = { ...base, stage: "NEGOTIATION" as const };
+    expect(deadlineAlert({ ...negotiation, stageDueAt: dueIn(4 * 60 + 1) }, NOW)).toBeNull();
+    expect(deadlineAlert({ ...negotiation, stageDueAt: dueIn(4 * 60) }, NOW)).toBe("warning");
+    expect(deadlineAlert({ ...negotiation, stageDueAt: dueIn(-1) }, NOW)).toBe("expired");
+  });
+
+  it("lead sem responsável segue as mesmas faixas", () => {
+    const unassigned = { ...base, ownerId: null };
+    expect(deadlineAlert({ ...unassigned, stageDueAt: dueIn(4 * 60 + 1) }, NOW)).toBeNull();
+    expect(deadlineAlert({ ...unassigned, stageDueAt: dueIn(60) }, NOW)).toBe("warning");
+    expect(deadlineAlert({ ...unassigned, stageDueAt: dueIn(-60) }, NOW)).toBe("expired");
+  });
+
+  it("Lixeira e etapas sem prazo não têm alerta", () => {
+    expect(deadlineAlert({ ...base, status: "TRASHED", stageDueAt: dueIn(-60) }, NOW)).toBeNull();
+    expect(deadlineAlert({ ...base, ownerId: null, stage: "NEW", stageDueAt: null }, NOW)).toBeNull();
+    expect(deadlineAlert({ ...base, stage: "NO_ANSWER", stageDueAt: null }, NOW)).toBeNull();
   });
 });
 
