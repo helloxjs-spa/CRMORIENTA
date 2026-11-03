@@ -132,7 +132,7 @@ export function KanbanBoard({ columns, now, canMove }: { columns: KanbanColumn[]
               </h2>
               <span className="rounded-full bg-white px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-slate-200">{column.total}</span>
             </header>
-            <ol className="flex max-h-[calc(100vh-17rem)] min-h-24 flex-col gap-2 overflow-y-auto px-2 pb-2">
+            <ol className="flex max-h-[calc(100vh-17rem)] min-h-24 flex-col gap-2 overflow-y-auto px-2 pt-1 pb-2">
               {column.cards.map((card) => (
                 <Card
                   key={card.id}
